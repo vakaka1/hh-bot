@@ -1,5 +1,7 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { api, AgentConfig, AgentStore, Me, Resume } from "./api";
+import { useEffect, useState } from "react";
+import { api, AgentConfig, AgentMode, AgentStore, AboutData, Me, Resume } from "./api";
+import ModelSelect from "./ModelSelect";
+import Chat from "./Chat";
 
 type Screen = "loading" | "login" | "app";
 type Tab = "chat" | "profile" | "settings";
@@ -15,83 +17,6 @@ function useTheme() {
     localStorage.setItem("theme", theme);
   }, [theme]);
   return { theme, setTheme };
-}
-
-// ---------------------------------------------------------------- выбор модели
-
-function ModelSelect({
-  value,
-  options,
-  onChange,
-  dropUp = false,
-  wide = false,
-  title,
-}: {
-  value: string;
-  options: string[];
-  onChange: (m: string) => void;
-  dropUp?: boolean;
-  wide?: boolean;
-  title?: string;
-}) {
-  const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    function onDoc(e: MouseEvent) {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
-    }
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") setOpen(false);
-    }
-    document.addEventListener("mousedown", onDoc);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDoc);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
-  const all = options.includes(value) || !value ? options : [value, ...options];
-
-  return (
-    <div className={"ms-root" + (wide ? " wide" : "")} ref={rootRef}>
-      <button
-        type="button"
-        className={"ms-btn" + (open ? " open" : "")}
-        onClick={() => setOpen((o) => !o)}
-        title={title}
-      >
-        <span className="ms-label">{value || "Выберите модель"}</span>
-        <svg className="ms-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-      </button>
-      {open && (
-        <div className={"ms-menu" + (dropUp ? " up" : "")}>
-          {all.map((m) => (
-            <button
-              type="button"
-              key={m}
-              className={"ms-item" + (m === value ? " selected" : "")}
-              onClick={() => {
-                onChange(m);
-                setOpen(false);
-              }}
-            >
-              <span className="ms-item-label">{m}</span>
-              {m === value && (
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                  <path d="M5 13l4 4L19 7" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              )}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
 }
 
 // ---------------------------------------------------------------- вход
@@ -133,129 +58,82 @@ function LoginScreen({ onDone }: { onDone: () => void }) {
   );
 }
 
-// ---------------------------------------------------------------- чат
+// ---------------------------------------------------------------- обо мне
 
-function Chat({ store }: { store: AgentStore }) {
-  const [text, setText] = useState("");
-  const inputRef = useRef<HTMLTextAreaElement>(null);
+// Значения совпадают с теми, что использует hh.ru (job_search_status)
+const SEARCH_STATUSES = [
+  { id: "active_search", label: "Активно ищу работу" },
+  { id: "looking_for_offers", label: "Рассматриваю предложения" },
+  { id: "not_looking_for_job", label: "Не ищу работу" },
+];
 
-  const active =
-    store.active !== null && store.active < store.providers.length
-      ? store.providers[store.active]
-      : null;
+const EMPLOYMENT_OPTIONS = [
+  { id: "full", label: "Полная занятость" },
+  { id: "part", label: "Частичная" },
+  { id: "project", label: "Проектная" },
+  { id: "internship", label: "Стажировка" },
+];
 
-  const [models, setModels] = useState<string[]>([]);
-  const [chatModel, setChatModel] = useState(
-    () => localStorage.getItem("chat_model") || ""
-  );
+const SCHEDULE_OPTIONS = [
+  { id: "full_day", label: "Полный день" },
+  { id: "flexible", label: "Гибкий график" },
+  { id: "remote", label: "Удалённая работа" },
+  { id: "hybrid", label: "Гибрид" },
+  { id: "shift", label: "Сменный" },
+  { id: "fly_in_fly_out", label: "Вахта" },
+];
 
-  useEffect(() => {
-    if (!active) return;
-    let cancelled = false;
-    api
-      .agentTest(active)
-      .then((res) => {
-        if (cancelled) return;
-        setModels(res.models || []);
-        setChatModel((cur) => {
-          if (cur) return cur;
-          const def = store.agent_model || active.model || (res.models || [])[0] || "";
-          if (def) localStorage.setItem("chat_model", def);
-          return def;
-        });
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [active?.base_url, active?.api_key]);
-
-  // пересчёт высоты ПОСЛЕ отрисовки нового текста — иначе поле отстаёт
-  // на строку и обрезает текст
-  useLayoutEffect(() => {
-    const el = inputRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    // +2px на верхнюю и нижнюю рамку (box-sizing: border-box)
-    const needed = el.scrollHeight + 2;
-    el.style.height = Math.min(needed, 260) + "px";
-    el.style.overflowY = needed > 260 ? "auto" : "hidden";
-  }, [text]);
-
-  function send() {
-    // заглушка: отправка появится вместе с агентом
+function ChipSelect({
+  value,
+  options,
+  onChange,
+  multi,
+}: {
+  value: string[];
+  options: { id: string; label: string }[];
+  onChange: (v: string[]) => void;
+  multi: boolean;
+}) {
+  function toggle(id: string) {
+    if (!multi) {
+      onChange(value.includes(id) ? [] : [id]);
+      return;
+    }
+    onChange(value.includes(id) ? value.filter((x) => x !== id) : [...value, id]);
   }
-
-  function pickModel(m: string) {
-    setChatModel(m);
-    localStorage.setItem("chat_model", m);
-  }
-
   return (
-    <div className="chat-layout">
-      <aside className="chat-sidebar">
-        <div className="sidebar-title">История</div>
-      </aside>
-
-      <div className="chat-main">
-        <div className="chat-hero">
-          <div className="chat-title">
-            HH-bot<span className="logo-accent">.</span>
-          </div>
-        </div>
-
-        <div className="chat-composer">
-          <textarea
-            ref={inputRef}
-            className="chat-textarea"
-            rows={1}
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                send();
-              }
-            }}
-            placeholder="Напишите сообщение…"
-          />
-          {models.length > 0 && (
-            <ModelSelect
-              value={chatModel}
-              options={models}
-              onChange={pickModel}
-              dropUp
-              title="Модель для чата"
-            />
-          )}
-
-          <button
-            className="send-btn"
-            onClick={send}
-            disabled={!text.trim()}
-            title="Отправить"
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <path d="M12 20V5M12 5l-6 6M12 5l6 6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </button>
-        </div>
-      </div>
+    <div className="chip-select">
+      {options.map((o) => (
+        <button
+          key={o.id}
+          type="button"
+          className={"chip" + (value.includes(o.id) ? " active" : "")}
+          onClick={() => toggle(o.id)}
+        >
+          {o.label}
+        </button>
+      ))}
     </div>
   );
 }
-
-// ---------------------------------------------------------------- профиль
 
 function Profile() {
   const [me, setMe] = useState<Me | null>(null);
   const [meErr, setMeErr] = useState("");
   const [resumes, setResumes] = useState<Resume[] | null>(null);
   const [resErr, setResErr] = useState("");
+  const [unpublishing, setUnpublishing] = useState<string | null>(null);
+  const [resAction, setResAction] = useState<{ text: string; ok: boolean } | null>(null);
+
+  const [about, setAbout] = useState<AboutData>({});
+  const [aboutSaved, setAboutSaved] = useState(false);
+  const [aboutErr, setAboutErr] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [statusBusy, setStatusBusy] = useState(false);
+  const [statusErr, setStatusErr] = useState("");
 
   async function loadMe() {
     setMeErr("");
-    setMe(null);
     try {
       setMe(await api.getMe());
     } catch (e) {
@@ -266,6 +144,7 @@ function Profile() {
   async function loadResumes() {
     setResErr("");
     setResumes(null);
+    setResAction(null);
     try {
       const data = await api.getResumes();
       setResumes(data.items || []);
@@ -277,35 +156,209 @@ function Profile() {
   useEffect(() => {
     loadMe();
     loadResumes();
+    api
+      .aboutLoad()
+      .then((d) => setAbout(d || {}))
+      .catch(() => {});
   }, []);
+
+  function patchAbout(p: Partial<AboutData>) {
+    setAbout((a) => ({ ...a, ...p }));
+    setAboutSaved(false);
+  }
+
+  async function saveAbout() {
+    setSaving(true);
+    setAboutErr("");
+    try {
+      await api.aboutSave(about);
+      setAboutSaved(true);
+    } catch (e) {
+      setAboutErr(String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function unpublish(r: Resume) {
+    if (!r.id) return;
+    setUnpublishing(r.id);
+    setResAction(null);
+    try {
+      await api.unpublishResume(r.id);
+      setResAction({ text: `Резюме «${r.title}» снято с показа на hh.ru (видимость «не показывать никому»).`, ok: true });
+      await loadResumes();
+    } catch (e) {
+      setResAction({ text: String(e), ok: false });
+    } finally {
+      setUnpublishing(null);
+    }
+  }
+
+  // Смена статуса поиска: сразу меняем на hh.ru, локально сохраняем
+  // копию для агента. При ошибке откатываем выбор.
+  async function changeSearchStatus(id: string) {
+    if (statusBusy || id === searchStatus) return;
+    const prev = searchStatus;
+    setStatusBusy(true);
+    setStatusErr("");
+    patchAbout({ search_status: id });
+    try {
+      await api.setJobSearchStatus(id);
+      await api.aboutSave({ ...about, search_status: id });
+      setAboutSaved(true);
+    } catch (e) {
+      setAbout((a) => ({ ...a, search_status: prev }));
+      setStatusErr(String(e));
+    } finally {
+      setStatusBusy(false);
+    }
+  }
 
   const fullName = me
     ? [me.last_name, me.first_name, me.middle_name].filter(Boolean).join(" ")
     : "";
 
+  const searchStatus = about.search_status || "";
+
   return (
-    <div className="grid-2">
-      <div className="card">
-        <div className="card-head">
-          <h2>Профиль</h2>
-          <button className="ghost-btn small" onClick={loadMe}>
-            Обновить
-          </button>
-        </div>
-        {meErr && <p className="status err">{meErr}</p>}
-        {!me && !meErr && <p className="hint">Загрузка…</p>}
-        {me && (
-          <div className="info-block">
-            <div className="name">{fullName}</div>
-            <div>
-              Email: {me.email || "—"}{" "}
-              <span className={me.is_email_verified ? "ok-badge" : "warn-badge"}>
-                {me.is_email_verified ? "подтверждён" : "не подтверждён"}
-              </span>
-            </div>
-            <div>Телефон: {me.phone || "—"}</div>
+    <div className="profile-grid">
+      <div className="profile-col">
+        <div className="card">
+          <div className="card-head">
+            <h2>Информация из профиля</h2>
+            <button className="ghost-btn small" onClick={loadMe}>
+              Обновить
+            </button>
           </div>
-        )}
+          {meErr && <p className="status err">{meErr}</p>}
+          {!me && !meErr && <p className="hint">Загрузка…</p>}
+          {me && (
+            <>
+              <div className="info-block">
+                <div className="name">{fullName}</div>
+                <div>
+                  {me.email || "—"}{" "}
+                  <span className={me.is_email_verified ? "ok-badge" : "warn-badge"}>
+                    {me.is_email_verified ? "почта подтверждена" : "почта не подтверждена"}
+                  </span>
+                </div>
+                <div>{me.phone || "Телефон не указан"}</div>
+              </div>
+
+              <div className="status-row">
+                <span className="status-label">Статус поиска</span>
+                <div className="segmented wrap">
+                  {SEARCH_STATUSES.map((s) => (
+                    <button
+                      key={s.id}
+                      className={searchStatus === s.id ? "seg active" : "seg"}
+                      disabled={statusBusy}
+                      onClick={() => changeSearchStatus(s.id)}
+                    >
+                      {s.label}
+                    </button>
+                  ))}
+                </div>
+                {statusErr && <p className="status err">{statusErr}</p>}
+                {!searchStatus && !statusErr && (
+                  <p className="hint">Укажите статус — он изменится и на hh.ru, и для агента.</p>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+
+        <div className="card">
+          <div className="card-head">
+            <h2>Обо мне</h2>
+            <button
+              className="btn-primary small"
+              onClick={saveAbout}
+              disabled={saving || aboutSaved}
+            >
+              {saving ? "Сохраняем…" : aboutSaved ? "Сохранено" : "Сохранить"}
+            </button>
+          </div>
+          <p className="hint">
+            Расскажите агенту о себе — эти данные он будет использовать вместе с резюме
+            при откликах и подборе вакансий.
+          </p>
+
+          <div className="about-form">
+            <label>
+              Желаемая должность
+              <input
+                value={about.desired_title || ""}
+                onChange={(e) => patchAbout({ desired_title: e.target.value })}
+                placeholder="Например, frontend-разработчик"
+              />
+            </label>
+            <div className="about-two-col">
+              <label>
+                Город
+                <input
+                  value={about.area || ""}
+                  onChange={(e) => patchAbout({ area: e.target.value })}
+                  placeholder="Например, Москва"
+                />
+              </label>
+              <label>
+                Зарплата, ₽/мес
+                <input
+                  inputMode="numeric"
+                  value={about.salary || ""}
+                  onChange={(e) => patchAbout({ salary: e.target.value.replace(/[^\d\s]/g, "") })}
+                  placeholder="Например, 250000"
+                />
+              </label>
+            </div>
+
+            <div className="field-label">Занятость</div>
+            <ChipSelect
+              value={about.employment || []}
+              options={EMPLOYMENT_OPTIONS}
+              onChange={(v) => patchAbout({ employment: v })}
+              multi
+            />
+
+            <div className="field-label">График</div>
+            <ChipSelect
+              value={about.schedule || []}
+              options={SCHEDULE_OPTIONS}
+              onChange={(v) => patchAbout({ schedule: v })}
+              multi
+            />
+
+            <label>
+              Ключевые навыки
+              <input
+                value={about.skills || ""}
+                onChange={(e) => patchAbout({ skills: e.target.value })}
+                placeholder="Через запятую: React, TypeScript, SQL"
+              />
+            </label>
+            <label>
+              Опыт и достижения
+              <textarea
+                rows={3}
+                value={about.experience || ""}
+                onChange={(e) => patchAbout({ experience: e.target.value })}
+                placeholder="Сколько лет, в каких сферах, главные результаты"
+              />
+            </label>
+            <label>
+              Коротко о себе
+              <textarea
+                rows={3}
+                value={about.about || ""}
+                onChange={(e) => patchAbout({ about: e.target.value })}
+                placeholder="Чем занимаетесь, что вам важно в работе, чего избегать"
+              />
+            </label>
+          </div>
+          {aboutErr && <p className="status err">{aboutErr}</p>}
+        </div>
       </div>
 
       <div className="card">
@@ -318,9 +371,12 @@ function Profile() {
         {resErr && <p className="status err">{resErr}</p>}
         {!resumes && !resErr && <p className="hint">Загрузка…</p>}
         {resumes && resumes.length === 0 && <p className="hint">Резюме не найдены.</p>}
+        {resumes && resumes.length > 0 && (
+          <p className="hint">Резюме подгружены с hh.ru. Опубликованное можно снять с показа.</p>
+        )}
         {resumes &&
-          resumes.map((r, i) => (
-            <div className="resume-item" key={i}>
+          resumes.map((r) => (
+            <div className="resume-item" key={r.id || r.title}>
               <div className="title">{r.title}</div>
               <div className="meta">
                 <span className={"badge " + (r.status?.id === "published" ? "published" : "")}>
@@ -329,8 +385,19 @@ function Profile() {
                 Обновлено: {(r.updated_at || "").slice(0, 10)} · просмотры: {r.views ?? "—"} ·
                 отклики: {r.new_messages ?? "—"}
               </div>
+              {r.status?.id === "published" && r.id && (
+                <button
+                  className="ghost-btn small unpublish-btn"
+                  onClick={() => unpublish(r)}
+                  disabled={unpublishing === r.id}
+                  title="Снять резюме с публикации на hh.ru"
+                >
+                  {unpublishing === r.id ? "Снимаем…" : "Снять с публикации"}
+                </button>
+              )}
             </div>
           ))}
+        {resAction && <p className={"status " + (resAction.ok ? "ok" : "err")}>{resAction.text}</p>}
       </div>
     </div>
   );
@@ -344,12 +411,14 @@ function Settings({
   store,
   onOpenProviders,
   onAgentModel,
+  onSearchUrl,
 }: {
   theme: string;
   setTheme: (t: string) => void;
   store: AgentStore;
   onOpenProviders: () => void;
   onAgentModel: (m: string | null) => void;
+  onSearchUrl: (url: string | null) => void;
 }) {
   const active =
     store.active !== null && store.active < store.providers.length
@@ -436,6 +505,72 @@ function Settings({
           </p>
         )}
       </div>
+
+      <SearchCard url={store.search_url || ""} onSave={onSearchUrl} />
+    </div>
+  );
+}
+
+function SearchCard({
+  url,
+  onSave,
+}: {
+  url: string;
+  onSave: (url: string | null) => void;
+}) {
+  const [value, setValue] = useState(url);
+  const [testing, setTesting] = useState(false);
+  const [status, setStatus] = useState<{ text: string; ok: boolean } | null>(null);
+
+  useEffect(() => setValue(url), [url]);
+
+  async function test() {
+    setTesting(true);
+    setStatus(null);
+    // проверяем то, что введено, даже если ещё не сохранено
+    try {
+      const res = await api.searchTest("свежие вакансии frontend", value.trim() || undefined);
+      const first = res.results?.[0];
+      setStatus({
+        text: `Поиск работает через ${res.backend}. Пример: «${first?.title || "?"}»`,
+        ok: true,
+      });
+    } catch (e) {
+      setStatus({ text: String(e), ok: false });
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  return (
+    <div className="card">
+      <div className="card-head">
+        <h2>Поиск в интернете</h2>
+        <div className="row gap">
+          <button className="ghost-btn small" onClick={test} disabled={testing}>
+            {testing ? "Проверяем…" : "Проверить"}
+          </button>
+          <button
+            className="btn-primary small"
+            onClick={() => onSave(value.trim() || null)}
+          >
+            Сохранить
+          </button>
+        </div>
+      </div>
+      <p className="hint">
+        По умолчанию используется публичный поиск. Если он недоступен, укажите свой SearXNG-инстанс
+        (например, <code>https://searx.example.org</code>) — поиск пойдёт через него.
+      </p>
+      <label>
+        SearXNG URL (необязательно)
+        <input
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          placeholder="https://searx.example.org"
+        />
+      </label>
+      {status && <p className={"status " + (status.ok ? "ok" : "err")}>{status.text}</p>}
     </div>
   );
 }
@@ -642,6 +777,14 @@ export default function App() {
   const [tab, setTab] = useState<Tab>("chat");
   const [providersOpen, setProvidersOpen] = useState(false);
   const [store, setStore] = useState<AgentStore>({ providers: [], active: null });
+  const [agentMode, setAgentMode] = useState<AgentMode>(
+    () => (localStorage.getItem("agent_mode") as AgentMode) || "chat"
+  );
+
+  function changeAgentMode(m: AgentMode) {
+    setAgentMode(m);
+    localStorage.setItem("agent_mode", m);
+  }
 
   useEffect(() => {
     api
@@ -671,6 +814,12 @@ export default function App() {
     api.agentsSave({ ...store, agent_model: m }).catch(() => {});
   }
 
+  function setAgentSearchUrl(url: string | null) {
+    const next = { ...store, search_url: url };
+    setStore(next);
+    api.agentsSave(next).catch(() => {});
+  }
+
   if (screen === "loading") return null;
 
   if (screen === "login") {
@@ -690,7 +839,7 @@ export default function App() {
             Чат
           </button>
           <button className={"tab-btn" + (tab === "profile" ? " active" : "")} onClick={() => setTab("profile")}>
-            Профиль
+            Обо мне
           </button>
           <button className={"tab-btn" + (tab === "settings" ? " active" : "")} onClick={() => setTab("settings")}>
             Настройки
@@ -704,7 +853,15 @@ export default function App() {
       </header>
 
       <main className={tab === "chat" ? "chat-page" : ""}>
-        {tab === "chat" && <Chat store={store} />}
+        <div style={{ display: tab === "chat" ? "contents" : "none" }}>
+          <Chat
+            store={store}
+            mode={agentMode}
+            onMode={changeAgentMode}
+            onTheme={setTheme}
+            onNavigate={setTab}
+          />
+        </div>
         {tab === "profile" && <Profile />}
         {tab === "settings" &&
           (providersOpen ? (
@@ -719,6 +876,7 @@ export default function App() {
               store={store}
               onOpenProviders={() => setProvidersOpen(true)}
               onAgentModel={setAgentModel}
+              onSearchUrl={setAgentSearchUrl}
             />
           ))}
       </main>

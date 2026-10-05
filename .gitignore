@@ -31,3 +31,4 @@ src-tauri/gen/
 
 # Frontend build
 ui/dist/
+src-tauri/.vite/
