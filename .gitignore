@@ -24,3 +24,10 @@ Thumbs.db
 .obsidian/
 *.md
 !README.md
+
+# Rust / Tauri build
+src-tauri/target/
+src-tauri/gen/
+
+# Frontend build
+ui/dist/
