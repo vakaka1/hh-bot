@@ -298,10 +298,11 @@ fn web_action_script(kind: &str, arg: &str) -> String {
         "job_search_status" => {
             r#"[{ url: '/shards/user_statuses/job_search_status?status=' + encodeURIComponent(__ARG__), method: 'PUT' }]"#
         }
+        // рабочий способ — внутренний endpoint hh.ru (hash = id резюме,
+        // проверено на живой сессии): 200 и {"success":true}. Другие
+        // маршруты (PUT /resumes/{id}/unpublish и пр.) у веб-API нет.
         "unpublish" => r#"[
-              { url: '/applicant/resume/edit?resume=' + encodeURIComponent(__ARG__) + '&hhtmSource=hhbot', method: 'POST', json: { accessType: [{ string: 'no_one' }] } },
-              { url: '/shards/resume/edit/visibility', method: 'POST', json: { hash: __ARG__, accessType: 'no_one' } },
-              { url: '/resumes/' + encodeURIComponent(__ARG__) + '/unpublish', method: 'PUT' }
+              { url: '/shards/resume/edit/visibility', method: 'POST', json: { hash: __ARG__, accessType: 'no_one' }, expect: '"success":true' }
             ]"#,
         _ => "[]",
     };
@@ -321,8 +322,9 @@ fn web_action_script(kind: &str, arg: &str) -> String {
         const headers = Object.assign(xsrf(), a.json ? { 'Content-Type': 'application/json' } : {});
         const r = await fetch(a.url, { method: a.method, credentials: 'include', headers, body: a.json ? JSON.stringify(a.json) : undefined });
         const t = await r.text();
-        results.push({ ok: r.ok, status: r.status, body: t.slice(0, 200) });
-        if (r.ok) break;
+        const ok = r.ok && (!a.expect || t.includes(a.expect));
+        results.push({ ok: ok, status: r.status, body: t.slice(0, 200) });
+        if (ok) break;
       } catch (e) {
         results.push({ ok: false, status: 0, body: String(e) });
       }
@@ -1242,10 +1244,18 @@ async fn tool_list_resumes(app: &tauri::AppHandle) -> Result<String, String> {
         .map(|arr| {
             arr.iter()
                 .map(|r| {
+                    let hidden = r["access"]["type"]["id"] == "no_one";
+                    let status_id = r["status"]["id"].as_str().unwrap_or("");
+                    let status = if hidden {
+                        "снято с публикации (не видно работодателям)"
+                    } else {
+                        r["status"]["name"].as_str().unwrap_or(status_id)
+                    };
                     serde_json::json!({
                         "id": r["id"],
                         "title": r["title"],
-                        "status": r["status"]["name"],
+                        "status": status,
+                        "hidden": hidden,
                         "updated_at": r["updated_at"],
                     })
                 })
@@ -1865,7 +1875,14 @@ fn resumes_summary(resumes: &serde_json::Value) -> String {
     let mut out = String::from("\n## Резюме пользователя на hh.ru\n\n");
     for r in items {
         let title = r["title"].as_str().unwrap_or("(без названия)");
-        let status = r["status"]["name"].as_str().unwrap_or("");
+        // hh.ru у скрытого резюме продолжает отдавать status «опубликовано»,
+        // реальная видимость живёт в access.type.id
+        let hidden = r["access"]["type"]["id"] == "no_one";
+        let status = if hidden {
+            "снято с публикации (не видно работодателям)".to_string()
+        } else {
+            r["status"]["name"].as_str().unwrap_or("").to_string()
+        };
         let updated = r["updated_at"].as_str().unwrap_or("").get(..10).unwrap_or("");
         let salary = r["salary"]["amount"]
             .as_i64()
@@ -1941,7 +1958,9 @@ fn build_system_prompt(app: &tauri::AppHandle, model: &str) -> String {
 Форма не ограничивает твоё знание о человеке: если данных много, лучше лишняя заметка, \
 чем потерянный факт. Сохраняй только то, что пользователь реально сообщил, без домыслов. \
 После сохранения кратко упомяни, что запомнил. \
-Полный профиль читай инструментом read_profile; пользователь сам правит его на вкладке «Профиль».\n\n\
+Полный профиль читай инструментом read_profile. Пользователь видит на вкладке «Профиль» \
+свои заметки-знания; структурированные поля — служебные для подготовки резюме, ты ведёшь их сам. \
+Чем полнее заметки, тем лучше агент знает пользователя — ограничивай их только смыслом, а не формой.\n\n\
 Ты можешь сам узнавать пользователя в стиле интервью: когда разговор естественно заходит \
 о нём или данных явно не хватает, задавай короткие вопросы — 1–3 за раз, не анкету из \
 десяти пунктов, и сразу складывай ответы в профиль. Не превращай каждый чат в собеседование: \

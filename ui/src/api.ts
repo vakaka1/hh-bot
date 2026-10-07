@@ -89,9 +89,16 @@ export interface Resume {
   id?: string;
   title?: string;
   status?: { id?: string; name?: string };
+  // hh.ru у скрытого резюме отдаёт status «опубликовано» — реальная
+  // видимость живёт здесь: access.type.id === "no_one" значит снято с показа
+  access?: { type?: { id?: string; name?: string } };
   updated_at?: string;
   views?: number;
   new_messages?: number;
+}
+
+export function resumeHidden(r: Resume): boolean {
+  return r.access?.type?.id === "no_one" || r.status?.id === "not_published";
 }
 
 // Локальный профиль пользователя — то, что агент знает о человеке и что
