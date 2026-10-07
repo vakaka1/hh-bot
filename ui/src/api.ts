@@ -21,20 +21,36 @@ const mock: Record<string, unknown> = {
       { id: "resume-2", title: "React / TypeScript разработчик", status: { id: "draft", name: "Черновик" }, updated_at: "2026-09-18T09:30:00", views: 0, new_messages: 0 },
     ],
   },
-  about_load: {
-    search_status: "active_search",
-    desired_title: "Senior frontend-разработчик",
-    area: "Москва",
-    salary: "350000",
-    employment: ["full"],
-    schedule: ["remote", "flexible"],
-    skills: "React, TypeScript, Node.js",
-    experience: "8 лет коммерческой разработки, последний проект — B2B-платформа.",
+  profile_load: {
+    contacts: { full_name: "Иван Иванов", city: "Москва" },
+    positions: {
+      desired_title: "Senior frontend-разработчик",
+      area: "Москва",
+      salary: "350000",
+      employment: ["full"],
+      schedule: ["remote", "flexible"],
+    },
+    experience: [
+      {
+        company: "ООО «Технологии»",
+        position: "Senior frontend-разработчик",
+        period: "2021 — сейчас",
+        description: "B2B-платформа: архитектура фронтенда, менторство команды.",
+        achievements: "Сократил время загрузки интерфейса в 3 раза.",
+      },
+    ],
+    education: [{ institution: "МГТУ им. Баумана", specialty: "Прикладная математика", period: "2013 — 2017" }],
+    skills: ["React", "TypeScript", "Node.js"],
+    projects: [],
     about: "Веду проекты от архитектуры до релиза, люблю чистый код и понятные интерфейсы.",
+    notes: [
+      { topic: "здоровье", text: "Дистанционная работа важна из-за аллергии на пыль в офисах.", added_at: 1 },
+      { topic: "семья", text: "Двое детей, важен график с возможностью забирать из школы.", added_at: 2 },
+    ],
   },
   agent_test: { models: ["gpt-4o-mini", "gpt-4o", "gpt-4.1", "o3-mini"] },
   set_job_search_status: null,
-  about_save: null,
+  profile_save: null,
   web_action: null,
   chats_list: [],
   chat_get: [],
@@ -78,17 +94,25 @@ export interface Resume {
   new_messages?: number;
 }
 
-// Данные блока «Обо мне» — описывает сам пользователь, хранятся локально
-export interface AboutData {
-  search_status?: string; // статус поиска работы
-  desired_title?: string;
-  area?: string;
-  salary?: string;
-  employment?: string[];
-  schedule?: string[];
-  skills?: string;
-  experience?: string;
+// Локальный профиль пользователя — то, что агент знает о человеке и что
+// идёт в резюме. Хранится в приложении, пополняется и разговором с агентом,
+// и правкой вручную.
+export interface ProfileData {
+  contacts?: { full_name?: string; phone?: string; email?: string; city?: string; links?: string };
+  positions?: {
+    desired_title?: string;
+    area?: string;
+    salary?: string;
+    employment?: string[];
+    schedule?: string[];
+    search_status?: string;
+  };
+  experience?: { company?: string; position?: string; period?: string; description?: string; achievements?: string }[];
+  education?: { institution?: string; specialty?: string; period?: string }[];
+  skills?: string[];
+  projects?: { name?: string; role?: string; description?: string }[];
   about?: string;
+  notes?: { topic?: string | null; text: string; added_at?: number }[];
 }
 
 export interface AgentConfig {
@@ -123,8 +147,8 @@ export const api = {
     invoke<void>("web_action", { kind: "unpublish", arg: resumeId }),
   setJobSearchStatus: (status: string) =>
     invoke<void>("web_action", { kind: "job_search_status", arg: status }),
-  aboutLoad: () => invoke<AboutData>("about_load"),
-  aboutSave: (data: AboutData) => invoke<void>("about_save", { data }),  agentsLoad: () => invoke<AgentStore>("agents_load"),
+  profileLoad: () => invoke<ProfileData>("profile_load"),
+  profileSave: (data: ProfileData) => invoke<void>("profile_save", { data }),  agentsLoad: () => invoke<AgentStore>("agents_load"),
   agentsSave: (store: AgentStore) => invoke<void>("agents_save", { store }),
   agentTest: (config: AgentConfig) =>
     invoke<{ models: string[] }>("agent_test", { config }),

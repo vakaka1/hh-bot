@@ -431,16 +431,64 @@ async fn web_action(app: tauri::AppHandle, kind: String, arg: String) -> Result<
     run_web_action(&app, &kind, &arg).await
 }
 
-// ---------------------------------------------------------------- обо мне (локальное хранилище)
+// ---------------------------------------------------------------- профиль пользователя (локальное хранилище)
 
-#[tauri::command]
-fn about_load(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
-    Ok(read_json(about_path(&app)?).unwrap_or_else(|| serde_json::json!({})))
+fn profile_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(data_dir(app)?.join("profile.json"))
+}
+
+// Разовая миграция старого «Обо мне» (about.json) в профиль.
+// Старый файл сохраняется как about.json.bak.
+fn load_profile(app: &tauri::AppHandle) -> serde_json::Value {
+    let path = profile_path(app).unwrap_or_default();
+    if let Some(p) = read_json::<serde_json::Value>(path.clone()) {
+        return p;
+    }
+    // профиля ещё нет — пробуем перенести данные из about.json
+    let mut profile = json!({
+        "contacts": {},
+        "positions": {},
+        "experience": [],
+        "education": [],
+        "skills": [],
+        "about": "",
+        "notes": []
+    });
+    if let Some(about) = read_json::<serde_json::Value>(about_path(app).unwrap_or_default()) {
+        let positions = profile["positions"].as_object_mut().expect("obj");
+        for key in ["search_status", "desired_title", "area", "salary", "employment", "schedule"] {
+            if let Some(v) = about.get(key).filter(|v| !v.is_null()) {
+                positions.insert(key.to_string(), v.clone());
+            }
+        }
+        if let Some(s) = about["skills"].as_str() {
+            let items: Vec<String> = s
+                .split(',')
+                .map(|x| x.trim().to_string())
+                .filter(|x| !x.is_empty())
+                .collect();
+            profile["skills"] = json!(items);
+        }
+        let notes = profile["notes"].as_array_mut().expect("arr");
+        for (topic, key) in [("Опыт", "experience"), ("О себе", "about")] {
+            if let Some(s) = about[key].as_str().filter(|s| !s.trim().is_empty()) {
+                notes.push(json!({ "topic": topic, "text": s.trim(), "added_at": now() }));
+            }
+        }
+        let _ = std::fs::rename(about_path(app).unwrap_or_default(), about_path(app).unwrap_or_default().with_extension("json.bak"));
+    }
+    let _ = write_json(path, &profile);
+    profile
 }
 
 #[tauri::command]
-fn about_save(app: tauri::AppHandle, data: serde_json::Value) -> Result<(), String> {
-    write_json(about_path(&app)?, &data)
+fn profile_load(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    Ok(load_profile(&app))
+}
+
+#[tauri::command]
+fn profile_save(app: tauri::AppHandle, data: serde_json::Value) -> Result<(), String> {
+    write_json(profile_path(&app)?, &data)
 }
 
 // ---------------------------------------------------------------- agents (много провайдеров)
@@ -1009,6 +1057,51 @@ const TOOLS_JSON: &str = r#"[
   {
     "type": "function",
     "function": {
+      "name": "read_profile",
+      "description": "Прочитать локальный профиль пользователя: условия работы, навыки, опыт, образование, проекты, «о себе», заметки-факты. Используй, когда для ответа нужны сведения о пользователе.",
+      "parameters": { "type": "object", "properties": {} }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "search_vacancies",
+      "description": "Поиск вакансий на hh.ru. Возвращает список: название, зарплата, работодатель, регион, ссылка. Требует входа в hh.ru."
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "text": { "type": "string", "description": "Поисковая фраза (название профессии, ключевые слова)" },
+          "area": { "type": "string", "description": "Регион поиска — id или название области/города (например, Москва)" },
+          "experience": { "type": "string", "enum": ["no_experience", "between1And3", "between3And6", "moreThan6"], "description": "Требуемый опыт" },
+          "employment": { "type": "string", "enum": ["full", "part", "project", "internship"], "description": "Занятость" },
+          "schedule": { "type": "string", "enum": ["full_day", "flexible", "remote", "hybrid", "shift", "fly_in_fly_out"], "description": "График" },
+          "salary": { "type": "integer", "description": "Минимальная зарплата" },
+          "only_with_salary": { "type": "boolean", "description": "Только вакансии с указанной зарплатой" },
+          "search_field": { "type": "string", "enum": ["name", "company_name", "description"], "description": "Где искать: в названии, по компании или по описанию" },
+          "per_page": { "type": "integer", "description": "Результатов на страницу (по умолчанию 10, максимум 50)" },
+          "page": { "type": "integer", "description": "Номер страницы с нуля" }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "prepare_resume_texts",
+      "description": "Подготовить тексты для резюме hh.ru из локального профиля пользователя: название, ключевые навыки, описания мест работы, «О себе». Возвращает черновик для вставки в форму на hh.ru (API hh.ru не даёт создавать резюме автоматически).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "position": { "type": "string", "description": "Название должности; по умолчанию берётся из профиля" },
+          "skills": { "type": "array", "items": { "type": "string" }, "description": "Навыки для указания; по умолчанию берутся из профиля" },
+          "about": { "type": "string", "description": "Текст «О себе»; по умолчанию берётся из профиля" }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
       "name": "render_page",
       "description": "Открыть страницу во встроенном браузере (с выполнением JavaScript) и вернуть её видимый текст. Используй для SPA и страниц, где fetch_url вернул пустоту или заглушку (вход через логин, динамические списки).",
       "parameters": {
@@ -1035,6 +1128,64 @@ const APP_TOOLS_JSON: &str = r#"[
   {
     "type": "function",
     "function": {
+      "name": "read_resume",
+      "description": "Прочитать полное содержимое резюме пользователя на hh.ru по id (id можно получить через list_resumes): навыки, опыт, образование, «О себе». Только чтение.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "resume_id": { "type": "string" }
+        },
+        "required": ["resume_id"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "update_profile",
+      "description": "Сохранить сведения о пользователе в локальный профиль: условия работы, навыки, места работы, образование, проекты, «о себе», а также заметки-факты, которые пользователь рассказал о себе. Передавай только известные поля — остальное не изменится. Новое добавляется, ничего не удаляется. Не сохраняй предположения — только то, что пользователь реально сообщил.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "notes_add": { "type": "array", "items": { "type": "string" }, "description": "Факты о пользователе, которые стоит запомнить (по одному факту на элемент)" },
+          "notes_topic": { "type": "string", "description": "Общая тема для добавляемых заметок (например, «семья», «здоровье», «хобби»)" },
+          "desired_title": { "type": "string", "description": "Желаемая должность" },
+          "area": { "type": "string", "description": "Город работы" },
+          "salary": { "type": "string", "description": "Ожидаемая зарплата, только число" },
+          "search_status": { "type": "string", "enum": ["active_search", "looking_for_offers", "not_looking_for_job"], "description": "Статус поиска работы; меняй только когда пользователь прямо скажет" },
+          "employment": { "type": "array", "items": { "type": "string", "enum": ["full", "part", "project", "internship"] }, "description": "Занятость" },
+          "schedule": { "type": "array", "items": { "type": "string", "enum": ["full_day", "flexible", "remote", "hybrid", "shift", "fly_in_fly_out"] }, "description": "График работы" },
+          "skills_add": { "type": "array", "items": { "type": "string" }, "description": "Навыки, которые добавить к существующим" },
+          "about": { "type": "string", "description": "Коротко о себе: что важно в работе, чего избегать" },
+          "experience_add": {
+            "type": "object",
+            "properties": {
+              "company": { "type": "string" }, "position": { "type": "string" }, "period": { "type": "string" },
+              "description": { "type": "string" }, "achievements": { "type": "string" }
+            },
+            "description": "Место работы, которое добавить в профиль"
+          },
+          "education_add": {
+            "type": "object",
+            "properties": {
+              "institution": { "type": "string" }, "specialty": { "type": "string" }, "period": { "type": "string" }
+            },
+            "description": "Место учёбы, которое добавить в профиль"
+          },
+          "project_add": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" }, "role": { "type": "string" }, "description": { "type": "string" }
+            },
+            "description": "Проект, который добавить в профиль"
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
       "name": "set_theme",
       "description": "Переключить тему оформления приложения.",
       "parameters": {
@@ -1050,34 +1201,13 @@ const APP_TOOLS_JSON: &str = r#"[
     "type": "function",
     "function": {
       "name": "navigate",
-      "description": "Открыть раздел приложения: «обо мне» (профиль и резюме) или «настройки».",
+      "description": "Открыть раздел приложения: «профиль» (данные о пользователе и резюме) или «настройки».",
       "parameters": {
         "type": "object",
         "properties": {
           "tab": { "type": "string", "enum": ["chat", "profile", "settings"] }
         },
         "required": ["tab"]
-      }
-    }
-  },
-  {
-    "type": "function",
-    "function": {
-      "name": "save_about",
-      "description": "Сохранить данные блока «Обо мне» пользователя: желаемая должность, город, зарплата, занятость, график, навыки, опыт и т.д. Передавай только те поля, которые известны, — остальные останутся без изменений. Перед сохранением незнакомых данных сначала уточни их у пользователя.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "search_status": { "type": "string", "enum": ["active_search", "looking_for_offers", "not_looking_for_job"], "description": "Статус поиска работы (как на hh.ru)" },
-          "desired_title": { "type": "string", "description": "Желаемая должность" },
-          "area": { "type": "string", "description": "Город работы" },
-          "salary": { "type": "string", "description": "Ожидаемая зарплата в рублях в месяц, только число" },
-          "employment": { "type": "array", "items": { "type": "string", "enum": ["full", "part", "project", "internship"] }, "description": "Занятость" },
-          "schedule": { "type": "array", "items": { "type": "string", "enum": ["full_day", "flexible", "remote", "hybrid", "shift", "fly_in_fly_out"] }, "description": "График работы" },
-          "skills": { "type": "string", "description": "Ключевые навыки через запятую" },
-          "experience": { "type": "string", "description": "Опыт и достижения" },
-          "about": { "type": "string", "description": "Коротко о себе: что важно в работе, чего избегать" }
-        }
       }
     }
   },
@@ -1099,7 +1229,7 @@ const APP_TOOLS_JSON: &str = r#"[
 
 // инструменты, меняющие состояние приложения — в режиме confirm требуют подтверждения
 fn is_app_action(name: &str) -> bool {
-    matches!(name, "set_theme" | "navigate" | "save_about" | "unpublish_resume")
+    matches!(name, "set_theme" | "navigate" | "update_profile" | "unpublish_resume")
 }
 
 async fn tool_list_resumes(app: &tauri::AppHandle) -> Result<String, String> {
@@ -1135,53 +1265,393 @@ async fn tool_unpublish_resume(app: &tauri::AppHandle, args: &serde_json::Value)
     Ok("Резюме снято с показа на hh.ru (видимость «не показывать никому»).".into())
 }
 
-// Ключи, которые агент может менять в «Обо мне»; остальное игнорируем
-const ABOUT_KEYS: &[&str] = &[
-    "search_status",
-    "desired_title",
-    "area",
-    "salary",
-    "employment",
-    "schedule",
-    "skills",
-    "experience",
-    "about",
-];
+// ---------------------------------------------------------------- новые hh-инструменты
 
-async fn tool_save_about(app: &tauri::AppHandle, args: &serde_json::Value) -> Result<String, String> {
-    let mut about = read_json::<serde_json::Value>(about_path(app)?).unwrap_or(json!({}));
-    let obj = about.as_object_mut().ok_or("повреждён файл «Обо мне»")?;
-    if let Some(patch) = args.as_object() {
-        for (k, v) in patch {
-            if !ABOUT_KEYS.contains(&k.as_str()) {
+async fn tool_search_vacancies(app: &tauri::AppHandle, args: &serde_json::Value) -> Result<String, String> {
+    let mut params: Vec<(String, String)> = vec![
+        ("per_page".into(), args["per_page"].as_u64().unwrap_or(10).clamp(1, 50).to_string()),
+        ("page".into(), args["page"].as_u64().unwrap_or(0).to_string()),
+    ];
+    for key in ["text", "area", "experience", "employment", "schedule", "search_field"] {
+        let v = &args[key];
+        let vals: Vec<String> = match v {
+            serde_json::Value::String(s) if !s.trim().is_empty() => vec![s.trim().to_string()],
+            serde_json::Value::Array(a) => a.iter().filter_map(|x| x.as_str().map(|s| s.trim().to_string())).filter(|s| !s.is_empty()).collect(),
+            _ => vec![],
+        };
+        for val in vals {
+            params.push((key.to_string(), val));
+        }
+    }
+    if let Some(s) = args["salary"].as_u64() {
+        params.push(("salary".into(), s.to_string()));
+    }
+    if args["only_with_salary"].as_bool().unwrap_or(false) {
+        params.push(("only_with_salary".into(), "true".into()));
+    }
+    let query: String = params
+        .iter()
+        .map(|(k, v)| {
+            let enc = v.bytes().map(|b| match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+                b' ' => "+".to_string(),
+                _ => format!("%{:02X}", b),
+            }).collect::<String>();
+            format!("{}={}", k, enc)
+        })
+        .collect::<Vec<_>>()
+        .join("&");
+
+    let data = hh_get(app, &format!("/vacancies?{}", query)).await?;
+    let total = data["found"].as_u64().unwrap_or(0);
+    let items: Vec<String> = data["items"]
+        .as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .map(|v| {
+            let salary = match (&v["salary"]["from"], &v["salary"]["to"]) {
+                (f, t) if f.is_null() && t.is_null() => String::new(),
+                (f, t) => format!(
+                    " — {}",
+                    [
+                        f.as_u64().map(|x| format!("от {}", x)),
+                        t.as_u64().map(|x| format!("до {}", x)),
+                        v["salary"]["currency"].as_str().map(|c| c.to_string()),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                ),
+            };
+            let snippet = v["snippet"]["requirement"]
+                .as_str()
+                .map(|s| {
+                    let s = s.replace("<highlighttext>", "");
+                    let s = s.replace("</highlighttext>", "");
+                    format!(" | {}", s.chars().take(200).collect::<String>())
+                })
+                .unwrap_or_default();
+            format!(
+                "- {}{} | работодатель: {} | регион: {}{}\n  {}",
+                v["name"].as_str().unwrap_or("?"),
+                salary,
+                v["employer"]["name"].as_str().unwrap_or("?"),
+                v["area"]["name"].as_str().unwrap_or("?"),
+                snippet,
+                v["alternate_url"].as_str().unwrap_or("")
+            )
+        })
+        .collect();
+    if items.is_empty() {
+        return Ok(format!("Вакансий не найдено (запрос: {}).", query));
+    }
+    Ok(format!(
+        "Найдено вакансий: {}. Показаны {} (страница {}).\n\n{}",
+        total,
+        items.len(),
+        args["page"].as_u64().unwrap_or(0),
+        items.join("\n")
+    ))
+}
+
+async fn tool_read_resume(app: &tauri::AppHandle, args: &serde_json::Value) -> Result<String, String> {
+    let id = args["resume_id"]
+        .as_str()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .ok_or("нет параметра resume_id")?;
+    let r = hh_get(app, &format!("/resumes/{}", id)).await?;
+    let mut out = String::new();
+    let title = r["title"].as_str().unwrap_or("(без названия)");
+    out.push_str(&format!("Резюме «{}» (id: {})\n", title, id));
+    out.push_str(&format!("Статус: {}. Обновлено: {}\n", r["status"]["name"].as_str().unwrap_or("?"), r["updated_at"].as_str().unwrap_or("").get(..10).unwrap_or("")));
+    if let Some(a) = r["salary"].as_u64().or(r["salary"]["amount"].as_u64()) {
+        out.push_str(&format!("Зарплата: {} {}\n", a, r["salary"]["currency"].as_str().unwrap_or("RUR")));
+    }
+    let skills: Vec<&str> = r["skill_set"].as_array().map(|a| a.iter().filter_map(|s| s.as_str()).collect()).unwrap_or_default();
+    if !skills.is_empty() {
+        out.push_str(&format!("Ключевые навыки: {}\n", skills.join(", ")));
+    }
+    if let Some(s) = r["about"].as_str().filter(|s| !s.trim().is_empty()) {
+        out.push_str(&format!("О себе: {}\n", s.trim()));
+    }
+    if let Some(items) = r["experience"].as_array().filter(|a| !a.is_empty()) {
+        out.push_str("\nОпыт:\n");
+        for e in items {
+            out.push_str(&format!(
+                "- {} | {} | {} — {}\n",
+                e["company"].as_str().unwrap_or("?"),
+                e["position"].as_str().unwrap_or("?"),
+                e["start"].as_str().unwrap_or("?").get(..7).unwrap_or(""),
+                if e["current"].as_bool().unwrap_or(false) { "сейчас".into() } else { e["end"].as_str().unwrap_or("?").get(..7).unwrap_or("").to_string() }
+            ));
+            if let Some(s) = e["description"].as_str().filter(|s| !s.trim().is_empty()) {
+                let text: String = strip_tags(s).split_whitespace().collect::<Vec<_>>().join(" ");
+                out.push_str(&format!("  {}\n", text.chars().take(500).collect::<String>()));
+            }
+        }
+    }
+    if let Some(items) = r["education"]["main"].as_array().filter(|a| !a.is_empty()) {
+        out.push_str("\nОбразование:\n");
+        for e in items {
+            out.push_str(&format!(
+                "- {} | {} | {}{}\n",
+                e["name"].as_str().unwrap_or("?"),
+                e["organization"].as_str().unwrap_or(""),
+                e["year"].as_u64().map(|y| y.to_string()).unwrap_or_default(),
+                e["specialty"].as_str().map(|s| format!(" | {}", s)).unwrap_or_default()
+            ));
+        }
+    }
+    Ok(out)
+}
+
+// Готовые тексты для резюме hh.ru из локального профиля. API hh.ru не
+// даёт создавать и редактировать резюме, поэтому агент готовит тексты,
+// которые пользователь вставляет в форму на hh.ru.
+fn tool_prepare_resume_texts(args: &serde_json::Value, profile: &serde_json::Value) -> Result<String, String> {
+    let position = args["position"]
+        .as_str()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| profile["positions"]["desired_title"].as_str().map(|s| s.to_string()))
+        .unwrap_or_else(|| "(укажите желаемую должность)".into());
+    let skills: Vec<String> = if let Some(a) = args["skills"].as_array() {
+        a.iter().filter_map(|s| s.as_str().map(|x| x.to_string())).collect()
+    } else {
+        profile["skills"].as_array().map(|a| a.iter().filter_map(|s| s.as_str().map(|x| x.to_string())).collect()).unwrap_or_default()
+    };
+    let mut out = String::new();
+    out.push_str(&format!("## Черновик резюме: {}\n\n", position));
+    out.push_str("### Название резюме\n");
+    out.push_str(&format!("{}\n\n", position));
+    out.push_str("### Ключевые навыки (через запятую)\n");
+    if skills.is_empty() {
+        out.push_str("(в профиле нет навыков)\n\n");
+    } else {
+        out.push_str(&format!("{}\n\n", skills.join(", ")));
+    }
+    out.push_str("### Опыт\n");
+    let exp = profile["experience"].as_array().cloned().unwrap_or_default();
+    if exp.is_empty() {
+        out.push_str("(в профиле нет опыта — попросите пользователя рассказать)\n\n");
+    } else {
+        for e in &exp {
+            let head = ["company", "position", "period"].iter().filter_map(|f| e[*f].as_str().filter(|s| !s.trim().is_empty())).collect::<Vec<_>>().join(" — ");
+            out.push_str(&format!("{}\n", head));
+            if let Some(s) = e["description"].as_str().filter(|s| !s.trim().is_empty()) {
+                out.push_str(&format!("{}\n", s.trim()));
+            }
+            if let Some(s) = e["achievements"].as_str().filter(|s| !s.trim().is_empty()) {
+                out.push_str(&format!("Достижения: {}\n", s.trim()));
+            }
+            out.push('\n');
+        }
+    }
+    out.push_str("### О себе\n");
+    let about = args["about"].as_str().filter(|s| !s.trim().is_empty()).map(|s| s.to_string())
+        .or_else(|| profile["about"].as_str().filter(|s| !s.trim().is_empty()).map(|s| s.to_string()))
+        .unwrap_or_else(|| "(в профиле нет раздела «О себе»)".into());
+    out.push_str(&format!("{}\n", about));
+    out.push_str("\nТексты готовы для вставки в форму резюме на hh.ru (Создать резюме / Редактировать).");
+    Ok(out)
+}
+
+// Пополнение профиля агентом. Семантика — только добавление/обновление,
+// ничего не удаляется: пользователь правит полное содержимое на вкладке
+// «Профиль».
+async fn tool_update_profile(app: &tauri::AppHandle, args: &serde_json::Value) -> Result<String, String> {
+    let mut profile = load_profile(app);
+    let mut saved: Vec<String> = Vec::new();
+
+    // свободные заметки-факты
+    if let Some(items) = args["notes_add"].as_array() {
+        let notes = profile["notes"].as_array_mut().ok_or("повреждён профиль")?;
+        let mut n = 0;
+        for v in items {
+            let text = v.as_str().map(|s| s.trim()).unwrap_or("");
+            if text.is_empty() {
                 continue;
             }
-            if k == "search_status" {
-                // статус поиска — только допустимые значения hh.ru
-                let s = v.as_str().unwrap_or("");
-                if matches!(s, "active_search" | "looking_for_offers" | "not_looking_for_job") {
-                    obj.insert(k.clone(), json!(s));
+            let topic = args["notes_topic"].as_str().unwrap_or("").trim().to_string();
+            notes.push(json!({
+                "topic": if topic.is_empty() { json!(serde_json::Value::Null) } else { json!(topic) },
+                "text": text,
+                "added_at": now(),
+            }));
+            n += 1;
+        }
+        if n > 0 {
+            saved.push(format!("заметок: {}", n));
+        }
+    }
+
+    // строковые и списковые поля позиций (условий работы)
+    if let Some(pos) = args.as_object() {
+        let positions = profile["positions"].as_object_mut().ok_or("повреждён профиль")?;
+        for key in ["desired_title", "area", "salary"] {
+            if let Some(Some(s)) = pos.get(key).map(|v| v.as_str()) {
+                let s = s.trim();
+                if !s.is_empty() {
+                    positions.insert(key.to_string(), json!(s));
+                    saved.push(key.to_string());
                 }
-                continue;
             }
-            if let Some(s) = v.as_str() {
-                if !s.trim().is_empty() {
-                    obj.insert(k.clone(), json!(s.trim()));
-                }
-            } else if let Some(arr) = v.as_array() {
+        }
+        if let Some(Some(s)) = pos.get("search_status").map(|v| v.as_str()) {
+            if matches!(s, "active_search" | "looking_for_offers" | "not_looking_for_job") {
+                positions.insert("search_status".into(), json!(s));
+                saved.push("search_status".into());
+            }
+        }
+        for key in ["employment", "schedule"] {
+            if let Some(arr) = pos.get(key).and_then(|v| v.as_array()) {
                 let items: Vec<String> = arr
                     .iter()
                     .filter_map(|x| x.as_str().map(|s| s.trim().to_string()))
                     .filter(|s| !s.is_empty())
                     .collect();
                 if !items.is_empty() {
-                    obj.insert(k.clone(), json!(items));
+                    positions.insert(key.to_string(), json!(items));
+                    saved.push(key.to_string());
+                }
+            }
+        }
+        // навыки — добавляем к существующим без дублей
+        if let Some(arr) = pos.get("skills_add").and_then(|v| v.as_array()) {
+            let skills = profile["skills"].as_array_mut().ok_or("повреждён профиль")?;
+            let mut added = 0;
+            for v in arr {
+                let s = v.as_str().map(|x| x.trim()).unwrap_or("");
+                if s.is_empty() {
+                    continue;
+                }
+                let exists = skills.iter().any(|x| x.as_str().map(|y| y.eq_ignore_ascii_case(s)).unwrap_or(false));
+                if !exists {
+                    skills.push(json!(s));
+                    added += 1;
+                }
+            }
+            if added > 0 {
+                saved.push(format!("навыков: {}", added));
+            }
+        }
+        // коротко о себе — перезапись только если пусто или явно передано
+        if let Some(Some(s)) = pos.get("about").map(|v| v.as_str()) {
+            let s = s.trim();
+            if !s.is_empty() {
+                profile["about"] = json!(s);
+                saved.push("about".into());
+            }
+        }
+    }
+
+    // структурированные элементы: опыт, образование, проекты
+    for (key, arr_key, fields) in [
+        ("experience_add", "experience", &["company", "position", "period", "description", "achievements"][..]),
+        ("education_add", "education", &["institution", "specialty", "period"][..]),
+        ("project_add", "projects", &["name", "role", "description"][..]),
+    ] {
+        if let Some(item) = args.get(key) {
+            let mut entry = serde_json::Map::new();
+            for f in fields {
+                if let Some(Some(s)) = item.get(f).map(|v| v.as_str()) {
+                    let s = s.trim();
+                    if !s.is_empty() {
+                        entry.insert(f.to_string(), json!(s));
+                    }
+                }
+            }
+            if !entry.is_empty() {
+                profile[arr_key].as_array_mut().ok_or("повреждён профиль")?.push(json!(entry));
+                saved.push(arr_key.to_string());
+            }
+        }
+    }
+
+    if saved.is_empty() {
+        return Ok("Ничего не сохранено: не передано ни одного распознанного поля.".into());
+    }
+    write_json(profile_path(app)?, &profile)?;
+    Ok(format!("Сохранено в профиль: {}.", saved.join(", ")))
+}
+
+// человекочитаемый текст профиля для агента (read_profile и системный промпт)
+fn profile_brief(profile: &serde_json::Value, max_notes: usize) -> String {
+    let mut out = String::new();
+    let pos = &profile["positions"];
+    const POS_LABELS: &[(&str, &str)] = &[
+        ("desired_title", "Желаемая должность"),
+        ("area", "Город"),
+        ("salary", "Ожидаемая зарплата"),
+        ("search_status", "Статус поиска"),
+        ("employment", "Занятость"),
+        ("schedule", "График"),
+    ];
+    let mut lines: Vec<String> = Vec::new();
+    for (k, label) in POS_LABELS {
+        let v = &pos[*k];
+        let rendered = if let Some(s) = v.as_str() {
+            let s = s.trim();
+            if s.is_empty() { None } else { Some(s.to_string()) }
+        } else if let Some(arr) = v.as_array() {
+            let items: Vec<String> = arr.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect();
+            if items.is_empty() { None } else { Some(items.join(", ")) }
+        } else {
+            None
+        };
+        if let Some(s) = rendered {
+            lines.push(format!("- {}: {}", label, s));
+        }
+    }
+    if !lines.is_empty() {
+        out.push_str("## Условия работы\n");
+        out.push_str(&lines.join("\n"));
+        out.push('\n');
+    }
+    if let Some(skills) = profile["skills"].as_array().filter(|a| !a.is_empty()) {
+        let names: Vec<&str> = skills.iter().filter_map(|s| s.as_str()).collect();
+        out.push_str(&format!("\n## Навыки\n{}\n", names.join(", ")));
+    }
+    for (key, title) in [("experience", "Опыт работы"), ("education", "Образование"), ("projects", "Проекты")] {
+        let Some(items) = profile[key].as_array().filter(|a| !a.is_empty()) else { continue };
+        out.push_str(&format!("\n## {}\n", title));
+        for it in items {
+            let mut parts: Vec<String> = Vec::new();
+            for f in ["company", "position", "institution", "specialty", "name", "role", "period"] {
+                if let Some(s) = it[f].as_str().filter(|s| !s.trim().is_empty()) {
+                    parts.push(s.to_string());
+                }
+            }
+            out.push_str(&format!("- {}\n", parts.join(" — ")));
+            for f in ["description", "achievements"] {
+                if let Some(s) = it[f].as_str().filter(|s| !s.trim().is_empty()) {
+                    out.push_str(&format!("  {}\n", s));
                 }
             }
         }
     }
-    write_json(about_path(app)?, &about)?;
-    Ok("Данные «Обо мне» сохранены.".into())
+    if let Some(s) = profile["about"].as_str().filter(|s| !s.trim().is_empty()) {
+        out.push_str(&format!("\n## О себе\n{}\n", s.trim()));
+    }
+    if let Some(notes) = profile["notes"].as_array().filter(|a| !a.is_empty()) {
+        let skip = notes.len().saturating_sub(max_notes);
+        out.push_str(&format!("\n## Заметки{}\n", if skip > 0 { format!(" (показаны последние {}, всего {})", notes.len() - skip, notes.len()) } else { String::new() }));
+        for n in &notes[skip..] {
+            let topic = n["topic"].as_str().unwrap_or("");
+            let prefix = if topic.is_empty() { String::new() } else { format!("[{}] ", topic) };
+            out.push_str(&format!("- {}{}\n", prefix, n["text"].as_str().unwrap_or("")));
+        }
+    }
+    if out.is_empty() {
+        out.push_str("Профиль пока пуст.\n");
+    }
+    out
+}
+
+async fn tool_read_profile(app: &tauri::AppHandle) -> Result<String, String> {
+    Ok(profile_brief(&load_profile(app), 100))
 }
 
 async fn tool_current_datetime() -> String {
@@ -1306,7 +1776,11 @@ async fn run_tool(
         "fetch_url" => tool_fetch_url(args).await,
         "render_page" => tool_render_page(app, args).await,
         "list_resumes" => tool_list_resumes(app).await,
-        "save_about" => tool_save_about(app, args).await,
+        "read_resume" => tool_read_resume(app, args).await,
+        "read_profile" => tool_read_profile(app).await,
+        "update_profile" => tool_update_profile(app, args).await,
+        "search_vacancies" => tool_search_vacancies(app, args).await,
+        "prepare_resume_texts" => tool_prepare_resume_texts(args, &load_profile(app)),
         "unpublish_resume" => tool_unpublish_resume(app, args).await,
         _ => Err(format!("неизвестный инструмент: {}", name)),
     };
@@ -1362,38 +1836,8 @@ fn resumes_summary(resumes: &serde_json::Value) -> String {
     out
 }
 
-fn build_system_prompt(app: &tauri::AppHandle) -> String {
-    let about: serde_json::Value = read_json(about_path(app).unwrap_or_default()).unwrap_or(json!({}));
-    // человеческие названия полей «Обо мне» — чтобы в промпт попадали
-    // русские подписи, а не ключи
-    const LABELS: &[(&str, &str)] = &[
-        ("search_status", "Статус поиска"),
-        ("desired_title", "Желаемая должность"),
-        ("area", "Город"),
-        ("salary", "Ожидаемая зарплата, ₽/мес"),
-        ("employment", "Занятость"),
-        ("schedule", "График"),
-        ("skills", "Ключевые навыки"),
-        ("experience", "Опыт и достижения"),
-        ("about", "Коротко о себе"),
-    ];
-    let field_value = |k: &str| -> Option<String> {
-        let v = about.get(k)?;
-        if let Some(s) = v.as_str() {
-            let s = s.trim();
-            if s.is_empty() { return None; }
-            return Some(s.to_string());
-        }
-        if let Some(arr) = v.as_array() {
-            let items: Vec<String> = arr
-                .iter()
-                .filter_map(|x| x.as_str().map(|s| s.to_string()))
-                .collect();
-            if items.is_empty() { return None; }
-            return Some(items.join(", "));
-        }
-        None
-    };
+fn build_system_prompt(app: &tauri::AppHandle, model: &str) -> String {
+    let profile = load_profile(app);
 
     let now_dt = chrono::Local::now();
     let weekdays = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"];
@@ -1403,24 +1847,29 @@ fn build_system_prompt(app: &tauri::AppHandle) -> String {
         now_dt.format("%d.%m.%Y"),
         wd
     );
-    p.push_str(
-        "Ты — HH-агент, помощник по поиску работы на hh.ru внутри настольного приложения HH-bot. \
-Твоя задача — помогать пользователю с поиском работы: подбором вакансий, анализом рынка, \
-советами по резюме и откликам, подготовкой к собеседованиям. \
-Отвечай на русском языке, по делу, структурировано. Используй Markdown: заголовки, списки, \
-таблицы, блоки кода — где это уместно. \
-У тебя есть инструменты web_search (поиск в интернете) и fetch_url (прочитать страницу). \
-Пользуйся ими, когда нужны актуальные данные: свежие вакансии, зарплаты, информация о компании. \
-Сначала ищи, потом отвечай — не выдумывай ссылки и факты о рынке.\n\n\
-## Данные пользователя из профиля «Обо мне»\n\n",
-    );
-    for (k, label) in LABELS {
-        if let Some(v) = field_value(k) {
-            p.push_str(&format!("- {}: {}\n", label, v));
-        } else {
-            p.push_str(&format!("- {}: (не указано)\n", label));
-        }
-    }
+    let model_display = if model.trim().is_empty() { "неизвестной ИИ-модели" } else { model.trim() };
+    p.push_str(&format!(
+        "## Кто ты\n\n\
+Ты — ИИ-агент HH-bot: программный помощник, а не человек. Ты работаешь на {model_display}. \
+Если пользователь спросит, кто ты или на какой модели ты работаешь, отвечай честно и прямо: \
+«Я ИИ-агент, работающий на модели {model_display} внутри приложения HH-bot». \
+Никогда не притворяйся человеком и не скрывай, что ты ИИ.\n\n\
+Помогаешь пользователю с любыми задачами: отвечаешь на вопросы, ищешь информацию в интернете, \
+объясняешь, пишешь тексты, а также умеешь работать с hh.ru и профилем пользователя (подробности ниже). \
+Ты НЕ зациклен на поиске работы: темами труда занимаешься только когда пользователь сам \
+об этом попросит, и не навязываешь вакансии, отклики и советы по резюме без запроса. \
+Отвечай на русском языке, по делу, структурировано, просто и по-человечески. \
+Используй Markdown: заголовки, списки, таблицы, блоки кода — где это уместно. \
+Когда нужны актуальные данные, пользуйся инструментами web_search и fetch_url — \
+сначала ищи, потом отвечай, не выдумывай факты и ссылки.\n\n\
+## Твоя работа на hh.ru\n\n\
+Ты работаешь на hh.ru от имени пользователя: под его аккаунтом ищешь вакансии, \
+смотришь его резюме, готовишь тексты для форм hh.ru. Действия, влияющие на аккаунт \
+(публикация, статус поиска), делаешь только с явного согласия пользователя. \
+Когда пользователь просит что-то сделать на hh.ru, прямо говори, что делаешь это от его имени.\n\n\
+## Что ты знаешь о пользователе\n\n",
+    ));
+    p.push_str(&profile_brief(&profile, 12));
     // имя и резюме из hh.ru
     {
         let cache = profile_cache().lock().expect("mutex").clone();
@@ -1430,22 +1879,30 @@ fn build_system_prompt(app: &tauri::AppHandle) -> String {
             .collect::<Vec<_>>()
             .join(" ");
         if !full_name.trim().is_empty() {
-            p.push_str(&format!("\nПользователя зовут: {}.\n", full_name.trim()));
+            p.push_str(&format!("\nПользователя зовут: {} (данные hh.ru).\n", full_name.trim()));
         }
         p.push_str(&resumes_summary(&cache["resumes"]));
     }
     p.push_str(
-        "\n## Работа с профилем «Обо мне»\n\n\
-Эти данные нужны тебе для подбора вакансий и откликов. Веди себя так:\n\
-- Если данных хватает для текущего запроса — просто отвечай, ничего не спрашивай.\n\
-- Если для запроса или подбора вакансий не хватает важных данных (нет желаемой должности, города, зарплаты, навыков, опыта), \
-задай пользователю короткие вопросы — 1–3 уточнения за раз, не анкету из десяти пунктов.\n\
-- Заполнять профиль можно и без запроса: если пользователь в разговоре упоминает свой опыт, навыки, зарплатные ожидания, \
-город или график — предложи сохранить это в «Обо мне» (или сохрани через save_about, если пользователь явно не против).\n\
-- Через save_about сохраняй только то, что пользователь подтвердил словами. Статус поиска \
-(active_search — активно ищу, looking_for_offers — рассматриваю предложения, not_looking_for_job — не ищу работу) \
-меняй, только когда пользователь прямо скажет, что изменил отношение к поиску.\n\
-- После сохранения кратко сообщи, что добавлено в профиль.\n",
+        "\n## Как пополнять знания о пользователе\n\n\
+Ты должен знать о пользователе как можно больше — это твоя база для любых его просьб. \
+Всё, что он рассказывает о себе (опыт, навыки, работа, учёба, планы, обстоятельства жизни, \
+предпочтения), — сохраняй в профиль через update_profile: структурированные данные — \
+в соответствующие поля, отдельные факты — в notes_add. Сохраняй только то, что пользователь \
+реально сообщил, без домыслов. После сохранения кратко упомяни, что запомнил. \
+Полный профиль читай инструментом read_profile; пользователь сам правит его на вкладке «Профиль».\n\n\
+Ты можешь сам узнавать пользователя в стиле интервью: когда разговор естественно заходит \
+о нём или данных явно не хватает, задавай короткие вопросы — 1–3 за раз, не анкету из \
+десяти пунктов, и сразу складывай ответы в профиль. Не превращай каждый чат в собеседование: \
+спрашивай только тогда, когда это уместно и действительно пригодится.\n\n\
+## Работа с hh.ru\n\n\
+По просьбе пользователя:\n\
+- ищи вакансии через search_vacancies;\n\
+- смотри резюме через list_resumes и read_resume;\n\
+- готовь тексты для формы резюме из профиля через prepare_resume_texts \
+(автоматического создания резюме у hh.ru нет — пользователь вставит их в форму сам);\n\
+- при подборе вакансий учитывай условия и навыки из профиля, но уточняй, \
+если запрос неполный.\n",
     );
     p
 }
@@ -1746,7 +2203,7 @@ async fn chat_run(
 
     // ---- цикл агента
     let mut api_messages: Vec<serde_json::Value> = Vec::new();
-    api_messages.push(serde_json::json!({ "role": "system", "content": build_system_prompt(app) }));
+    api_messages.push(serde_json::json!({ "role": "system", "content": build_system_prompt(app, model) }));
     api_messages.extend(history);
     api_messages.push(serde_json::json!({ "role": "user", "content": message }));
 
@@ -2023,8 +2480,8 @@ fn main() {
             get_me,
             get_resumes,
             web_action,
-            about_load,
-            about_save,
+            profile_load,
+            profile_save,
             agents_load,
             agents_save,
             agent_test,

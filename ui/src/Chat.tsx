@@ -44,17 +44,21 @@ function toolLabel(name: string, args?: Record<string, unknown>): string {
     return u ? `Читает: ${u}` : "Читает страницу";
   }
   if (name === "list_resumes") return "Смотрит резюме на hh.ru";
+  if (name === "read_resume") return "Читает резюме на hh.ru";
+  if (name === "search_vacancies") return "Ищет вакансии на hh.ru";
+  if (name === "read_profile") return "Читает ваш профиль";
+  if (name === "prepare_resume_texts") return "Готовит тексты для резюме";
   if (name === "set_theme") {
     const t = args?.theme as string | undefined;
     return t === "dark" ? "Включает тёмную тему" : t === "light" ? "Включает светлую тему" : t === "system" ? "Ставит системную тему" : "Меняет тему";
   }
   if (name === "navigate") {
     const tab = args?.tab as string | undefined;
-    if (tab === "profile") return "Открывает раздел «Обо мне»";
+    if (tab === "profile") return "Открывает раздел «Профиль»";
     if (tab === "settings") return "Открывает настройки";
     return "Открывает чат";
   }
-  if (name === "save_about") return "Сохраняет профиль «Обо мне»";
+  if (name === "update_profile") return "Запоминает сведения о вас";
   if (name === "unpublish_resume") return "Снимает резюме с публикации";
   return name;
 }
@@ -71,7 +75,9 @@ function processSummary(parts: Part[]): string {
         : p.name === "list_resumes" ? "смотрел резюме"
         : p.name === "set_theme" ? "менял тему"
         : p.name === "navigate" ? "открывал разделы"
-        : p.name === "save_about" ? "правил профиль"
+        : p.name === "update_profile" ? "запоминал о вас"
+        : p.name === "read_profile" ? "читал ваш профиль"
+        : p.name === "search_vacancies" ? "искал вакансии"
         : p.name === "unpublish_resume" ? "снимал резюме с публикации"
         : p.name;
       if (!bits.includes(verb)) bits.push(verb);
@@ -431,7 +437,8 @@ export default function Chat({
               HH-bot<span className="logo-accent">.</span>
             </div>
             <p className="chat-hint">
-              Спросите о вакансиях, зарплатах, резюме — агент поищет в сети и подскажет.
+              Я ИИ-агент. Спрашивайте о чём угодно — я ищу в сети, знаю вас и умею работать
+              на hh.ru от вашего имени.
             </p>
           </div>
         ) : (

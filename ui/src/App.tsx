@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, AgentConfig, AgentMode, AgentStore, AboutData, Me, Resume } from "./api";
+import { api, AgentConfig, AgentMode, AgentStore, Me, ProfileData, Resume } from "./api";
 import ModelSelect from "./ModelSelect";
 import Chat from "./Chat";
 
@@ -68,14 +68,7 @@ function LoginScreen({ onDone }: { onDone: () => void }) {
   );
 }
 
-// ---------------------------------------------------------------- обо мне
-
-// Значения совпадают с теми, что использует hh.ru (job_search_status)
-const SEARCH_STATUSES = [
-  { id: "active_search", label: "Активно ищу работу" },
-  { id: "looking_for_offers", label: "Рассматриваю предложения" },
-  { id: "not_looking_for_job", label: "Не ищу работу" },
-];
+// ---------------------------------------------------------------- профиль пользователя
 
 const EMPLOYMENT_OPTIONS = [
   { id: "full", label: "Полная занятость" },
@@ -127,6 +120,73 @@ function ChipSelect({
   );
 }
 
+// редактируемый элемент списка (место работы, учёба, проект)
+function ListCard({
+  title,
+  fields,
+  value,
+  onChange,
+  onDelete,
+}: {
+  title: string;
+  fields: { key: string; label: string; long?: boolean }[];
+  value: Record<string, string>;
+  onChange: (v: Record<string, string>) => void;
+  onDelete: () => void;
+}) {
+  const filled = fields.some((f) => (value[f.key] || "").trim());
+  return (
+    <div className="list-card">
+      <div className="list-card-head">
+        <span className="list-card-title">{filled ? title : "Новая запись"}</span>
+        <button className="link-btn" onClick={onDelete}>
+          Удалить
+        </button>
+      </div>
+      {fields.map((f) =>
+        f.long ? (
+          <label key={f.key}>
+            {f.label}
+            <textarea
+              rows={2}
+              value={value[f.key] || ""}
+              onChange={(e) => onChange({ ...value, [f.key]: e.target.value })}
+            />
+          </label>
+        ) : (
+          <label key={f.key}>
+            {f.label}
+            <input
+              value={value[f.key] || ""}
+              onChange={(e) => onChange({ ...value, [f.key]: e.target.value })}
+            />
+          </label>
+        )
+      )}
+    </div>
+  );
+}
+
+const EXPERIENCE_FIELDS = [
+  { key: "company", label: "Компания" },
+  { key: "position", label: "Должность" },
+  { key: "period", label: "Период (например, 2021 — сейчас)" },
+  { key: "description", label: "Чем занимались", long: true },
+  { key: "achievements", label: "Достижения", long: true },
+];
+
+const EDUCATION_FIELDS = [
+  { key: "institution", label: "Учебное заведение" },
+  { key: "specialty", label: "Специальность" },
+  { key: "period", label: "Годы учёбы" },
+];
+
+const PROJECT_FIELDS = [
+  { key: "name", label: "Название проекта" },
+  { key: "role", label: "Ваша роль" },
+  { key: "description", label: "О проекте", long: true },
+];
+
 function Profile() {
   const [me, setMe] = useState<Me | null>(null);
   const [meErr, setMeErr] = useState("");
@@ -135,9 +195,9 @@ function Profile() {
   const [unpublishing, setUnpublishing] = useState<string | null>(null);
   const [resAction, setResAction] = useState<{ text: string; ok: boolean } | null>(null);
 
-  const [about, setAbout] = useState<AboutData>({});
-  const [aboutSaved, setAboutSaved] = useState(false);
-  const [aboutErr, setAboutErr] = useState("");
+  const [profile, setProfile] = useState<ProfileData>({});
+  const [profileSaved, setProfileSaved] = useState(false);
+  const [profileErr, setProfileErr] = useState("");
   const [saving, setSaving] = useState(false);
   const [statusBusy, setStatusBusy] = useState(false);
   const [statusErr, setStatusErr] = useState("");
@@ -167,24 +227,65 @@ function Profile() {
     loadMe();
     loadResumes();
     api
-      .aboutLoad()
-      .then((d) => setAbout(d || {}))
+      .profileLoad()
+      .then((d) => setProfile(d || {}))
       .catch(() => {});
   }, []);
 
-  function patchAbout(p: Partial<AboutData>) {
-    setAbout((a) => ({ ...a, ...p }));
-    setAboutSaved(false);
+  function patch(p: Partial<ProfileData>) {
+    setProfile((prev) => ({ ...prev, ...p }));
+    setProfileSaved(false);
   }
 
-  async function saveAbout() {
+  function patchPositions(p: Partial<NonNullable<ProfileData["positions"]>>) {
+    setProfile((prev) => ({ ...prev, positions: { ...prev.positions, ...p } }));
+    setProfileSaved(false);
+  }
+
+  // обновить элемент или добавить новый, если index за пределами списка
+  function patchItem<K extends "experience" | "education" | "projects">(
+    key: K,
+    index: number,
+    value: Record<string, string> | null
+  ) {
+    setProfile((prev) => {
+      const list = [...((prev[key] || []) as Record<string, string>[])];
+      if (value === null) list.splice(index, 1);
+      else list[index] = value;
+      return { ...prev, [key]: list };
+    });
+    setProfileSaved(false);
+  }
+
+  function addNote() {
+    setProfile((prev) => ({
+      ...prev,
+      notes: [...(prev.notes || []), { topic: "", text: "", added_at: Date.now() / 1000 }],
+    }));
+    setProfileSaved(false);
+  }
+
+  function patchNote(index: number, text: string, topic: string) {
+    setProfile((prev) => ({
+      ...prev,
+      notes: (prev.notes || []).map((n, i) => (i === index ? { ...n, text, topic } : n)),
+    }));
+    setProfileSaved(false);
+  }
+
+  function removeNote(index: number) {
+    setProfile((prev) => ({ ...prev, notes: (prev.notes || []).filter((_, i) => i !== index) }));
+    setProfileSaved(false);
+  }
+
+  async function saveProfile() {
     setSaving(true);
-    setAboutErr("");
+    setProfileErr("");
     try {
-      await api.aboutSave(about);
-      setAboutSaved(true);
+      await api.profileSave(profile);
+      setProfileSaved(true);
     } catch (e) {
-      setAboutErr(String(e));
+      setProfileErr(String(e));
     } finally {
       setSaving(false);
     }
@@ -205,20 +306,22 @@ function Profile() {
     }
   }
 
-  // Смена статуса поиска: сразу меняем на hh.ru, локально сохраняем
-  // копию для агента. При ошибке откатываем выбор.
+  // Смена статуса поиска: сразу меняем на hh.ru и сохраняем локально для
+  // агента. При ошибке откатываем выбор.
   async function changeSearchStatus(id: string) {
-    if (statusBusy || id === searchStatus) return;
-    const prev = searchStatus;
+    const prev = profile.positions?.search_status || "";
+    if (statusBusy || id === prev) return;
     setStatusBusy(true);
     setStatusErr("");
-    patchAbout({ search_status: id });
+    patchPositions({ search_status: id });
     try {
       await api.setJobSearchStatus(id);
-      await api.aboutSave({ ...about, search_status: id });
-      setAboutSaved(true);
+      const next = { ...profile, positions: { ...profile.positions, search_status: id } };
+      setProfile(next);
+      await api.profileSave(next);
+      setProfileSaved(true);
     } catch (e) {
-      setAbout((a) => ({ ...a, search_status: prev }));
+      patchPositions({ search_status: prev });
       setStatusErr(String(e));
     } finally {
       setStatusBusy(false);
@@ -229,14 +332,16 @@ function Profile() {
     ? [me.last_name, me.first_name, me.middle_name].filter(Boolean).join(" ")
     : "";
 
-  const searchStatus = about.search_status || "";
+  const positions = profile.positions || {};
+  const searchStatus = positions.search_status || "";
+  const skillsText = (profile.skills || []).join(", ");
 
   return (
     <div className="profile-grid">
       <div className="profile-col">
         <div className="card">
           <div className="card-head">
-            <h2>Информация из профиля</h2>
+            <h2>Информация из профиля hh.ru</h2>
             <button className="ghost-btn small" onClick={loadMe}>
               Обновить
             </button>
@@ -244,63 +349,66 @@ function Profile() {
           {meErr && <p className="status err">{meErr}</p>}
           {!me && !meErr && <p className="hint">Загрузка…</p>}
           {me && (
-            <>
-              <div className="info-block">
-                <div className="name">{fullName}</div>
-                <div>
-                  {me.email || "—"}{" "}
-                  <span className={me.is_email_verified ? "ok-badge" : "warn-badge"}>
-                    {me.is_email_verified ? "почта подтверждена" : "почта не подтверждена"}
-                  </span>
-                </div>
-                <div>{me.phone || "Телефон не указан"}</div>
+            <div className="info-block">
+              <div className="name">{fullName}</div>
+              <div>
+                {me.email || "—"}{" "}
+                <span className={me.is_email_verified ? "ok-badge" : "warn-badge"}>
+                  {me.is_email_verified ? "почта подтверждена" : "почта не подтверждена"}
+                </span>
               </div>
-
-              <div className="status-row">
-                <span className="status-label">Статус поиска</span>
-                <div className="segmented wrap">
-                  {SEARCH_STATUSES.map((s) => (
-                    <button
-                      key={s.id}
-                      className={searchStatus === s.id ? "seg active" : "seg"}
-                      disabled={statusBusy}
-                      onClick={() => changeSearchStatus(s.id)}
-                    >
-                      {s.label}
-                    </button>
-                  ))}
-                </div>
-                {statusErr && <p className="status err">{statusErr}</p>}
-                {!searchStatus && !statusErr && (
-                  <p className="hint">Укажите статус — он изменится и на hh.ru, и для агента.</p>
-                )}
-              </div>
-            </>
+              <div>{me.phone || "Телефон не указан"}</div>
+            </div>
           )}
+
+          <div className="status-row">
+            <span className="status-label">Статус поиска</span>
+            <div className="segmented wrap">
+              {[
+                { id: "active_search", label: "Активно ищу работу" },
+                { id: "looking_for_offers", label: "Рассматриваю предложения" },
+                { id: "not_looking_for_job", label: "Не ищу работу" },
+              ].map((s) => (
+                <button
+                  key={s.id}
+                  className={searchStatus === s.id ? "seg active" : "seg"}
+                  disabled={statusBusy}
+                  onClick={() => changeSearchStatus(s.id)}
+                >
+                  {s.label}
+                </button>
+              ))}
+            </div>
+            {statusErr && <p className="status err">{statusErr}</p>}
+            {!searchStatus && !statusErr && (
+              <p className="hint">Укажите статус — он изменится и на hh.ru, и для агента.</p>
+            )}
+          </div>
         </div>
 
         <div className="card">
           <div className="card-head">
-            <h2>Обо мне</h2>
+            <h2>Профиль</h2>
             <button
               className="btn-primary small"
-              onClick={saveAbout}
-              disabled={saving || aboutSaved}
+              onClick={saveProfile}
+              disabled={saving || profileSaved}
             >
-              {saving ? "Сохраняем…" : aboutSaved ? "Сохранено" : "Сохранить"}
+              {saving ? "Сохраняем…" : profileSaved ? "Сохранено" : "Сохранить"}
             </button>
           </div>
           <p className="hint">
-            Расскажите агенту о себе — эти данные он будет использовать вместе с резюме
-            при откликах и подборе вакансий.
+            Это то, что агент знает о вас и чем заполнит резюме. Рассказывайте о себе в чате —
+            агент пополнит профиль сам; здесь можно проверить и поправить.
           </p>
 
           <div className="about-form">
+            <div className="field-label">Условия работы</div>
             <label>
               Желаемая должность
               <input
-                value={about.desired_title || ""}
-                onChange={(e) => patchAbout({ desired_title: e.target.value })}
+                value={positions.desired_title || ""}
+                onChange={(e) => patchPositions({ desired_title: e.target.value })}
                 placeholder="Например, frontend-разработчик"
               />
             </label>
@@ -308,8 +416,8 @@ function Profile() {
               <label>
                 Город
                 <input
-                  value={about.area || ""}
-                  onChange={(e) => patchAbout({ area: e.target.value })}
+                  value={positions.area || ""}
+                  onChange={(e) => patchPositions({ area: e.target.value })}
                   placeholder="Например, Москва"
                 />
               </label>
@@ -317,57 +425,156 @@ function Profile() {
                 Зарплата, ₽/мес
                 <input
                   inputMode="numeric"
-                  value={about.salary || ""}
-                  onChange={(e) => patchAbout({ salary: e.target.value.replace(/[^\d\s]/g, "") })}
+                  value={positions.salary || ""}
+                  onChange={(e) => patchPositions({ salary: e.target.value.replace(/[^\d\s]/g, "") })}
                   placeholder="Например, 250000"
                 />
               </label>
             </div>
-
             <div className="field-label">Занятость</div>
             <ChipSelect
-              value={about.employment || []}
+              value={positions.employment || []}
               options={EMPLOYMENT_OPTIONS}
-              onChange={(v) => patchAbout({ employment: v })}
+              onChange={(v) => patchPositions({ employment: v })}
               multi
             />
-
             <div className="field-label">График</div>
             <ChipSelect
-              value={about.schedule || []}
+              value={positions.schedule || []}
               options={SCHEDULE_OPTIONS}
-              onChange={(v) => patchAbout({ schedule: v })}
+              onChange={(v) => patchPositions({ schedule: v })}
               multi
             />
+          </div>
 
-            <label>
-              Ключевые навыки
-              <input
-                value={about.skills || ""}
-                onChange={(e) => patchAbout({ skills: e.target.value })}
-                placeholder="Через запятую: React, TypeScript, SQL"
+          <div className="about-form">
+            <div className="field-label">Навыки</div>
+            <input
+              value={skillsText}
+              onChange={(e) =>
+                patch({
+                  skills: e.target.value
+                    .split(",")
+                    .map((s) => s.trim())
+                    .filter(Boolean),
+                })
+              }
+              placeholder="Через запятую: React, TypeScript, SQL"
+            />
+          </div>
+
+          <div className="about-form">
+            <div className="list-head">
+              <div className="field-label">Опыт работы</div>
+              <button
+                className="ghost-btn small"
+                onClick={() => patchItem("experience", (profile.experience || []).length, {})}
+              >
+                + Добавить
+              </button>
+            </div>
+            {(profile.experience || []).length === 0 && (
+              <p className="hint">Пока пусто — добавьте места работы или расскажите о них агенту.</p>
+            )}
+            {(profile.experience || []).map((item, i) => (
+              <ListCard
+                key={i}
+                title={[item.company, item.position].filter(Boolean).join(" — ") || "Место работы"}
+                fields={EXPERIENCE_FIELDS}
+                value={item as Record<string, string>}
+                onChange={(v) => patchItem("experience", i, v)}
+                onDelete={() => patchItem("experience", i, null)}
               />
-            </label>
-            <label>
-              Опыт и достижения
-              <textarea
-                rows={3}
-                value={about.experience || ""}
-                onChange={(e) => patchAbout({ experience: e.target.value })}
-                placeholder="Сколько лет, в каких сферах, главные результаты"
+            ))}
+          </div>
+
+          <div className="about-form">
+            <div className="list-head">
+              <div className="field-label">Образование</div>
+              <button
+                className="ghost-btn small"
+                onClick={() => patchItem("education", (profile.education || []).length, {})}
+              >
+                + Добавить
+              </button>
+            </div>
+            {(profile.education || []).map((item, i) => (
+              <ListCard
+                key={i}
+                title={item.institution || "Учебное заведение"}
+                fields={EDUCATION_FIELDS}
+                value={item as Record<string, string>}
+                onChange={(v) => patchItem("education", i, v)}
+                onDelete={() => patchItem("education", i, null)}
               />
-            </label>
+            ))}
+          </div>
+
+          <div className="about-form">
+            <div className="list-head">
+              <div className="field-label">Проекты</div>
+              <button
+                className="ghost-btn small"
+                onClick={() => patchItem("projects", (profile.projects || []).length, {})}
+              >
+                + Добавить
+              </button>
+            </div>
+            {(profile.projects || []).map((item, i) => (
+              <ListCard
+                key={i}
+                title={item.name || "Проект"}
+                fields={PROJECT_FIELDS}
+                value={item as Record<string, string>}
+                onChange={(v) => patchItem("projects", i, v)}
+                onDelete={() => patchItem("projects", i, null)}
+              />
+            ))}
+          </div>
+
+          <div className="about-form">
             <label>
               Коротко о себе
               <textarea
                 rows={3}
-                value={about.about || ""}
-                onChange={(e) => patchAbout({ about: e.target.value })}
+                value={profile.about || ""}
+                onChange={(e) => patch({ about: e.target.value })}
                 placeholder="Чем занимаетесь, что вам важно в работе, чего избегать"
               />
             </label>
           </div>
-          {aboutErr && <p className="status err">{aboutErr}</p>}
+
+          <div className="about-form">
+            <div className="list-head">
+              <div className="field-label">Заметки — факты о вас</div>
+              <button className="ghost-btn small" onClick={addNote}>
+                + Добавить
+              </button>
+            </div>
+            <p className="hint">
+              Всё, что стоит помнить агенту: обстоятельства, предпочтения, важные мелочи.
+              Агент добавляет их сам, когда вы что-то рассказываете.
+            </p>
+            {(profile.notes || []).map((n, i) => (
+              <div className="note-row" key={i}>
+                <input
+                  className="note-topic"
+                  value={n.topic || ""}
+                  onChange={(e) => patchNote(i, n.text, e.target.value)}
+                  placeholder="Тема"
+                />
+                <input
+                  value={n.text}
+                  onChange={(e) => patchNote(i, e.target.value, n.topic || "")}
+                  placeholder="Факт"
+                />
+                <button className="link-btn" onClick={() => removeNote(i)}>
+                  Удалить
+                </button>
+              </div>
+            ))}
+          </div>
+          {profileErr && <p className="status err">{profileErr}</p>}
         </div>
       </div>
 
@@ -382,7 +589,10 @@ function Profile() {
         {!resumes && !resErr && <p className="hint">Загрузка…</p>}
         {resumes && resumes.length === 0 && <p className="hint">Резюме не найдены.</p>}
         {resumes && resumes.length > 0 && (
-          <p className="hint">Резюме подгружены с hh.ru. Опубликованное можно снять с показа.</p>
+          <p className="hint">
+            Резюме подгружены с hh.ru. Попросите агента в чате подготовить тексты для нового или
+            обновлённого резюме из вашего профиля.
+          </p>
         )}
         {resumes &&
           resumes.map((r) => (
@@ -855,7 +1065,7 @@ export default function App() {
             Чат
           </button>
           <button className={"tab-btn" + (tab === "profile" ? " active" : "")} onClick={() => setTab("profile")}>
-            Обо мне
+            Профиль
           </button>
           <button className={"tab-btn" + (tab === "settings" ? " active" : "")} onClick={() => setTab("settings")}>
             Настройки
