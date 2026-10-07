@@ -156,6 +156,8 @@ export const api = {
     invoke<void>("web_action", { kind: "unpublish", arg: resumeId }),
   setJobSearchStatus: (status: string) =>
     invoke<void>("web_action", { kind: "job_search_status", arg: status }),
+  publishResume: (resumeId: string) => invoke<void>("publish_resume", { resumeId }),
+  openResumeEditor: (resumeId: string) => invoke<void>("open_resume_editor", { resumeId }),
   profileLoad: () => invoke<ProfileData>("profile_load"),
   profileSave: (data: ProfileData) => invoke<void>("profile_save", { data }),  agentsLoad: () => invoke<AgentStore>("agents_load"),
   agentsSave: (store: AgentStore) => invoke<void>("agents_save", { store }),

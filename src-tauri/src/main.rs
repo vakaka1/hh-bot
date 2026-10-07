@@ -275,6 +275,30 @@ async fn get_me(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     Ok(me)
 }
 
+// POST к api.hh.ru с OAuth-токеном, пустое тело (публикация резюме и т.п.)
+async fn hh_post(app: &tauri::AppHandle, path: &str) -> Result<serde_json::Value, String> {
+    let tokens = valid_token(app).await?;
+    let resp = http_client()
+        .post(format!("{}{}", HH_API_BASE, path))
+        .bearer_auth(&tokens.access_token)
+        .header("content-length", "0")
+        .send()
+        .await
+        .map_err(|e| format!("Сетевая ошибка: {}", e))?;
+    let status = resp.status();
+    let text = resp.text().await.map_err(|e| e.to_string())?;
+    let body: serde_json::Value = if text.trim().is_empty() {
+        json!({})
+    } else {
+        serde_json::from_str(&text).map_err(|e| format!("неожиданный ответ hh.ru: {}", e))?
+    };
+    if !status.is_success() {
+        let desc = body["description"].as_str().unwrap_or("неизвестная ошибка");
+        return Err(format!("hh.ru API {}: {}", status, desc));
+    }
+    Ok(body)
+}
+
 #[tauri::command]
 async fn get_resumes(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     let r = hh_get(&app, "/resumes/mine").await?;
@@ -431,6 +455,41 @@ async fn run_web_action(app: &tauri::AppHandle, kind: &str, arg: &str) -> Result
 #[tauri::command]
 async fn web_action(app: tauri::AppHandle, kind: String, arg: String) -> Result<(), String> {
     run_web_action(&app, &kind, &arg).await
+}
+
+// Опубликовать (вернуть на показ) резюме. У api.hh.ru это
+// POST /resumes/{id}/publish; при частых переключениях hh.ru отвечает
+// 429 «too often» — текст ошибки отдаётся пользователю как есть.
+#[tauri::command]
+async fn publish_resume(app: tauri::AppHandle, resume_id: String) -> Result<(), String> {
+    let id = resume_id.trim();
+    if id.is_empty() || id.contains('/') {
+        return Err("Некорректный id резюме".into());
+    }
+    hh_post(&app, &format!("/resumes/{}/publish", id)).await.map(|_| ())
+}
+
+// Редактирование резюме: формы правки живут только на самом hh.ru,
+// поэтому открываем видимое окно приложения со страницей резюме — там
+// кнопка «Редактировать» и карточка видимости; сессия общая с приложением.
+#[tauri::command]
+async fn open_resume_editor(app: tauri::AppHandle, resume_id: String) -> Result<(), String> {
+    let id = resume_id.trim();
+    if id.is_empty() || id.contains('/') {
+        return Err("Некорректный id резюме".into());
+    }
+    let url: tauri::Url = format!("https://hh.ru/resume/{}", id)
+        .parse()
+        .map_err(|_| "Некорректный адрес резюме".to_string())?;
+    if let Some(w) = app.get_webview_window("resumeweb") {
+        let _ = w.close();
+    }
+    tauri::WebviewWindowBuilder::new(&app, "resumeweb", tauri::WebviewUrl::External(url))
+        .title("Редактирование резюме — hh.ru")
+        .inner_size(1100.0, 900.0)
+        .build()
+        .map_err(|e| format!("Не удалось открыть окно hh.ru: {}", e))?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------- профиль пользователя (локальное хранилище)
@@ -1220,7 +1279,35 @@ const APP_TOOLS_JSON: &str = r#"[
     "type": "function",
     "function": {
       "name": "unpublish_resume",
-      "description": "Снять резюме с публикации на hh.ru. Влияет на видимость резюме для работодателей!",
+      "description": "Снять резюме с публикации на hh.ru (работодатели перестанут его видеть). Влияет на видимость резюме!",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "resume_id": { "type": "string" }
+        },
+        "required": ["resume_id"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "publish_resume",
+      "description": "Опубликовать резюме на hh.ru — вернуть его на показ работодателям (видимость «видно всем»). Влияет на видимость резюме!",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "resume_id": { "type": "string" }
+        },
+        "required": ["resume_id"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "edit_resume",
+      "description": "Открыть окно редактирования резюме на hh.ru (название, опыт, навыки, зарплата и т.д.). api.hh.ru не умеет менять содержимое резюме, поэтому правка делается пользователем в открывшемся окне. Сообщи пользователю, что окно открыто.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -1234,7 +1321,10 @@ const APP_TOOLS_JSON: &str = r#"[
 
 // инструменты, меняющие состояние приложения — в режиме confirm требуют подтверждения
 fn is_app_action(name: &str) -> bool {
-    matches!(name, "set_theme" | "navigate" | "update_profile" | "unpublish_resume")
+    matches!(
+        name,
+        "set_theme" | "navigate" | "update_profile" | "unpublish_resume" | "publish_resume" | "edit_resume"
+    )
 }
 
 async fn tool_list_resumes(app: &tauri::AppHandle) -> Result<String, String> {
@@ -1276,6 +1366,26 @@ async fn tool_unpublish_resume(app: &tauri::AppHandle, args: &serde_json::Value)
         .ok_or("нет параметра resume_id")?;
     run_web_action(app, "unpublish", id).await?;
     Ok("Резюме снято с показа на hh.ru (видимость «не показывать никому»).".into())
+}
+
+async fn tool_publish_resume(app: &tauri::AppHandle, args: &serde_json::Value) -> Result<String, String> {
+    let id = args["resume_id"]
+        .as_str()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .ok_or("нет параметра resume_id")?;
+    hh_post(app, &format!("/resumes/{}/publish", id)).await?;
+    Ok("Резюме опубликовано на hh.ru (видимость «видно всем»).".into())
+}
+
+async fn tool_edit_resume(app: &tauri::AppHandle, args: &serde_json::Value) -> Result<String, String> {
+    let id = args["resume_id"]
+        .as_str()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .ok_or("нет параметра resume_id")?;
+    open_resume_editor(app.clone(), id.to_string()).await?;
+    Ok("Открыл окно редактирования резюме на hh.ru.".into())
 }
 
 // ---------------------------------------------------------------- новые hh-инструменты
@@ -1841,6 +1951,8 @@ async fn run_tool(
         "search_vacancies" => tool_search_vacancies(app, args).await,
         "prepare_resume_texts" => tool_prepare_resume_texts(args, &load_profile(app)),
         "unpublish_resume" => tool_unpublish_resume(app, args).await,
+        "publish_resume" => tool_publish_resume(app, args).await,
+        "edit_resume" => tool_edit_resume(app, args).await,
         _ => Err(format!("неизвестный инструмент: {}", name)),
     };
     match res {
@@ -2621,6 +2733,8 @@ fn main() {
             get_me,
             get_resumes,
             web_action,
+            publish_resume,
+            open_resume_editor,
             profile_load,
             profile_save,
             agents_load,

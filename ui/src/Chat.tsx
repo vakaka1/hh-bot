@@ -60,6 +60,8 @@ function toolLabel(name: string, args?: Record<string, unknown>): string {
   }
   if (name === "update_profile") return "Запоминает сведения о вас";
   if (name === "unpublish_resume") return "Снимает резюме с публикации";
+  if (name === "publish_resume") return "Публикует резюме";
+  if (name === "edit_resume") return "Открывает редактирование резюме";
   return name;
 }
 
@@ -79,6 +81,8 @@ function processSummary(parts: Part[]): string {
         : p.name === "read_profile" ? "читал ваш профиль"
         : p.name === "search_vacancies" ? "искал вакансии"
         : p.name === "unpublish_resume" ? "снимал резюме с публикации"
+        : p.name === "publish_resume" ? "публиковал резюме"
+        : p.name === "edit_resume" ? "открывал редактирование резюме"
         : p.name;
       if (!bits.includes(verb)) bits.push(verb);
     }
@@ -436,10 +440,6 @@ export default function Chat({
             <div className="chat-title">
               HH-bot<span className="logo-accent">.</span>
             </div>
-            <p className="chat-hint">
-              Я ИИ-агент. Спрашивайте о чём угодно — я ищу в сети, знаю вас и умею работать
-              на hh.ru от вашего имени.
-            </p>
           </div>
         ) : (
           <div

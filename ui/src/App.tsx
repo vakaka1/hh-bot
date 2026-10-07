@@ -224,6 +224,32 @@ function Profile() {
     }
   }
 
+  async function publish(r: Resume) {
+    if (!r.id) return;
+    setUnpublishing(r.id);
+    setResAction(null);
+    try {
+      await api.publishResume(r.id);
+      setResAction({ text: `Резюме «${r.title}» опубликовано (видно работодателям).`, ok: true });
+      await loadResumes();
+    } catch (e) {
+      setResAction({ text: String(e), ok: false });
+    } finally {
+      setUnpublishing(null);
+    }
+  }
+
+  async function editResume(r: Resume) {
+    if (!r.id) return;
+    setResAction(null);
+    try {
+      await api.openResumeEditor(r.id);
+      setResAction({ text: `Открыл окно редактирования «${r.title}» на hh.ru.`, ok: true });
+    } catch (e) {
+      setResAction({ text: String(e), ok: false });
+    }
+  }
+
   const fullName = me
     ? [me.last_name, me.first_name, me.middle_name].filter(Boolean).join(" ")
     : "";
@@ -293,22 +319,24 @@ function Profile() {
             </p>
           )}
           {notes.map((n, i) => (
-            <div className="note-row" key={i}>
-              <input
-                className="note-topic"
-                value={n.topic || ""}
-                onChange={(e) => patchNote(i, { topic: e.target.value })}
-                placeholder="Тема"
-              />
+            <div className="note-card" key={i}>
+              <div className="note-card-head">
+                <input
+                  className="note-topic"
+                  value={n.topic || ""}
+                  onChange={(e) => patchNote(i, { topic: e.target.value })}
+                  placeholder="Тема (необязательно)"
+                />
+                <button className="link-btn" onClick={() => removeNote(i)}>
+                  Удалить
+                </button>
+              </div>
               <textarea
                 rows={2}
                 value={n.text}
                 onChange={(e) => patchNote(i, { text: e.target.value })}
                 placeholder="Факт"
               />
-              <button className="link-btn" onClick={() => removeNote(i)}>
-                Удалить
-              </button>
             </div>
           ))}
           <div className="row" style={{ marginTop: 10 }}>
@@ -359,6 +387,25 @@ function Profile() {
                   title="Снять резюме с публикации на hh.ru"
                 >
                   {unpublishing === r.id ? "Снимаем…" : "Снять с публикации"}
+                </button>
+              )}
+              {resumeHidden(r) && r.status?.id === "published" && r.id && (
+                <button
+                  className="ghost-btn small unpublish-btn"
+                  onClick={() => publish(r)}
+                  disabled={unpublishing === r.id}
+                  title="Вернуть резюме на публикацию на hh.ru"
+                >
+                  {unpublishing === r.id ? "Публикуем…" : "Опубликовать"}
+                </button>
+              )}
+              {r.id && (
+                <button
+                  className="ghost-btn small"
+                  onClick={() => editResume(r)}
+                  title="Редактировать резюме на hh.ru (откроется окно hh.ru)"
+                >
+                  Редактировать
                 </button>
               )}
             </div>
