@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api, AgentConfig, AgentMode, AgentStore, Me, ProfileData, Resume, resumeHidden } from "./api";
 import ModelSelect from "./ModelSelect";
 import Chat from "./Chat";
@@ -9,23 +10,56 @@ type Tab = "chat" | "profile" | "settings";
 type ThemeSetting = "system" | "light" | "dark";
 
 function useTheme() {
-  const [theme, setTheme] = useState<ThemeSetting>(() => {
+  const [theme, setThemeState] = useState<ThemeSetting>(() => {
     const saved = localStorage.getItem("theme");
     return saved === "light" || saved === "dark" ? saved : "system";
   });
   const [systemDark, setSystemDark] = useState(
     () => window.matchMedia("(prefers-color-scheme: dark)").matches
   );
+  // живёт ли webview в Tauri: там prefers-color-scheme не следует теме ОС,
+  // поэтому системную тему берём у окна Tauri
+  const [hasTauriTheme, setHasTauriTheme] = useState(false);
   useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      try {
+        const win = getCurrentWindow();
+        const t = await win.theme();
+        if (cancelled) return;
+        if (t === "light" || t === "dark") {
+          setHasTauriTheme(true);
+          setSystemDark(t === "dark");
+        }
+        unlisten = await win.onThemeChanged((e) => {
+          if (!cancelled) setSystemDark(e.payload === "dark");
+        });
+      } catch {
+        // демо/браузер — остаёмся на matchMedia
+      }
+    })();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+  useEffect(() => {
+    if (hasTauriTheme) return;
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
     const onChange = (e: MediaQueryListEvent) => setSystemDark(e.matches);
     mq.addEventListener("change", onChange);
     return () => mq.removeEventListener("change", onChange);
-  }, []);
+  }, [hasTauriTheme]);
   useEffect(() => {
     document.documentElement.dataset.theme =
       theme === "system" ? (systemDark ? "dark" : "light") : theme;
   }, [theme, systemDark]);
+  // выбор темы сохраняем: без этого он терялся при каждом запуске
+  const setTheme = (t: ThemeSetting) => {
+    localStorage.setItem("theme", t);
+    setThemeState(t);
+  };
   return { theme, setTheme };
 }
 
