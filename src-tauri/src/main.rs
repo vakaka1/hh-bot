@@ -510,7 +510,7 @@ fn load_profile(app: &tauri::AppHandle) -> serde_json::Value {
     if let Some(p) = read_json::<serde_json::Value>(path.clone()) {
         // разовая конвертация старого профиля: структурные поля -> заметки
         let mut notes: Vec<serde_json::Value> = p["notes"].as_array().cloned().unwrap_or_default();
-        let mut push_note = |topic: &str, text: String, notes: &mut Vec<serde_json::Value>| {
+        let push_note = |topic: &str, text: String, notes: &mut Vec<serde_json::Value>| {
             let t = text.trim();
             if !t.is_empty() {
                 notes.push(json!({ "topic": topic, "text": t, "added_at": now() }));
