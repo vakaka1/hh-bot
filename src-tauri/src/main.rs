@@ -2312,17 +2312,13 @@ async fn chat_run(
 
     // ---- цикл агента (Responses API: instructions + input-элементы)
     let instructions = build_system_prompt(app, model);
+    // content — простая строка: часть OpenAI-совместимых серверов (vLLM и др.)
+    // не принимает массив частей, а строка валидна и для OpenAI
     let to_user_item = |text: &str| -> serde_json::Value {
-        serde_json::json!({
-            "role": "user",
-            "content": [{ "type": "input_text", "text": text }],
-        })
+        serde_json::json!({ "role": "user", "content": text })
     };
     let to_assistant_item = |text: &str| -> serde_json::Value {
-        serde_json::json!({
-            "role": "assistant",
-            "content": [{ "type": "output_text", "text": text }],
-        })
+        serde_json::json!({ "role": "assistant", "content": text })
     };
     let mut input: Vec<serde_json::Value> = Vec::new();
     // history — только user/assistant с непустым текстом, в хронологическом порядке
