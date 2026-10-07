@@ -595,7 +595,6 @@ async fn search_test(
     url: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let store: AgentStore = read_json(agents_path(&app)?).unwrap_or_default();
-    let args = json!({ "query": query });
     let configured = url.or(store.search_url);
     let mut attempts: Vec<String> = Vec::new();
     if let Some(base) = configured.as_deref().map(|s| s.trim().trim_end_matches('/')).filter(|s| !s.is_empty()) {
@@ -935,7 +934,6 @@ async fn tool_fetch_url(args: &serde_json::Value) -> Result<String, String> {
                         }
                         None => {
                             tmp.push_str(&buf[..p]);
-                            buf = "";
                             break;
                         }
                     }
@@ -951,7 +949,6 @@ async fn tool_fetch_url(args: &serde_json::Value) -> Result<String, String> {
                         }
                         None => {
                             tmp.push_str(&buf[..p]);
-                            buf = "";
                             break;
                         }
                     }
@@ -1043,7 +1040,7 @@ const APP_TOOLS_JSON: &str = r#"[
       "parameters": {
         "type": "object",
         "properties": {
-          "theme": { "type": "string", "enum": ["light", "dark"], "description": "Светлая или тёмная тема" }
+          "theme": { "type": "string", "enum": ["light", "dark", "system"], "description": "Светлая, тёмная или «system» — следовать теме ОС (меняется автоматически)" }
         },
         "required": ["theme"]
       }

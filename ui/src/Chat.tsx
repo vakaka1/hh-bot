@@ -46,7 +46,7 @@ function toolLabel(name: string, args?: Record<string, unknown>): string {
   if (name === "list_resumes") return "Смотрит резюме на hh.ru";
   if (name === "set_theme") {
     const t = args?.theme as string | undefined;
-    return t === "dark" ? "Включает тёмную тему" : t === "light" ? "Включает светлую тему" : "Меняет тему";
+    return t === "dark" ? "Включает тёмную тему" : t === "light" ? "Включает светлую тему" : t === "system" ? "Ставит системную тему" : "Меняет тему";
   }
   if (name === "navigate") {
     const tab = args?.tab as string | undefined;
@@ -124,7 +124,7 @@ export default function Chat({
   store: AgentStore;
   mode: AgentMode;
   onMode: (m: AgentMode) => void;
-  onTheme: (t: "light" | "dark") => void;
+  onTheme: (t: "light" | "dark" | "system") => void;
   onNavigate: (tab: "chat" | "profile" | "settings") => void;
 }) {
   const [chats, setChats] = useState<ChatSummary[]>([]);
@@ -297,8 +297,9 @@ export default function Chat({
               ),
             }));
           case "do_action": {
-            if (e.name === "set_theme" && (e.args?.theme === "light" || e.args?.theme === "dark")) {
-              onTheme(e.args.theme);
+            const th = e.name === "set_theme" ? e.args?.theme : undefined;
+            if (th === "light" || th === "dark" || th === "system") {
+              onTheme(th);
             } else if (
               e.name === "navigate" &&
               e.args?.tab &&

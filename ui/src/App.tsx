@@ -6,16 +6,26 @@ import Chat from "./Chat";
 type Screen = "loading" | "login" | "app";
 type Tab = "chat" | "profile" | "settings";
 
+type ThemeSetting = "system" | "light" | "dark";
+
 function useTheme() {
-  const [theme, setTheme] = useState(
-    () =>
-      localStorage.getItem("theme") ||
-      (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
+  const [theme, setTheme] = useState<ThemeSetting>(() => {
+    const saved = localStorage.getItem("theme");
+    return saved === "light" || saved === "dark" ? saved : "system";
+  });
+  const [systemDark, setSystemDark] = useState(
+    () => window.matchMedia("(prefers-color-scheme: dark)").matches
   );
   useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-    localStorage.setItem("theme", theme);
-  }, [theme]);
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const onChange = (e: MediaQueryListEvent) => setSystemDark(e.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+  useEffect(() => {
+    document.documentElement.dataset.theme =
+      theme === "system" ? (systemDark ? "dark" : "light") : theme;
+  }, [theme, systemDark]);
   return { theme, setTheme };
 }
 
@@ -413,8 +423,8 @@ function Settings({
   onAgentModel,
   onSearchUrl,
 }: {
-  theme: string;
-  setTheme: (t: string) => void;
+  theme: ThemeSetting;
+  setTheme: (t: ThemeSetting) => void;
   store: AgentStore;
   onOpenProviders: () => void;
   onAgentModel: (m: string | null) => void;
@@ -450,6 +460,12 @@ function Settings({
           <h2>Внешний вид</h2>
         </div>
         <div className="segmented">
+          <button
+            className={theme === "system" ? "seg active" : "seg"}
+            onClick={() => setTheme("system")}
+          >
+            Системная
+          </button>
           <button
             className={theme === "light" ? "seg active" : "seg"}
             onClick={() => setTheme("light")}
