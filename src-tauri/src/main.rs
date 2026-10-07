@@ -451,6 +451,8 @@ fn load_profile(app: &tauri::AppHandle) -> serde_json::Value {
         "experience": [],
         "education": [],
         "skills": [],
+        "languages": [],
+        "wishes": "",
         "about": "",
         "notes": []
     });
@@ -1157,18 +1159,19 @@ const APP_TOOLS_JSON: &str = r#"[
           "schedule": { "type": "array", "items": { "type": "string", "enum": ["full_day", "flexible", "remote", "hybrid", "shift", "fly_in_fly_out"] }, "description": "График работы" },
           "skills_add": { "type": "array", "items": { "type": "string" }, "description": "Навыки, которые добавить к существующим" },
           "about": { "type": "string", "description": "Коротко о себе: что важно в работе, чего избегать" },
+          "wishes": { "type": "string", "description": "Желания и планы пользователя: какая работа нравится, окружение, карьерные планы, чего не хочется. Свободный текст — дополняй новыми подробностями к уже сохранённому" },
           "experience_add": {
             "type": "object",
             "properties": {
-              "company": { "type": "string" }, "position": { "type": "string" }, "period": { "type": "string" },
+              "company": { "type": "string" }, "position": { "type": "string" }, "city": { "type": "string" }, "period": { "type": "string" },
               "description": { "type": "string" }, "achievements": { "type": "string" }
             },
-            "description": "Место работы, которое добавить в профиль"
+            "description": "Место работы, которое добавить в профиль. В description переноси описание обязанностей из резюме ЦЕЛИКОМ, без сокращений"
           },
           "education_add": {
             "type": "object",
             "properties": {
-              "institution": { "type": "string" }, "specialty": { "type": "string" }, "period": { "type": "string" }
+              "institution": { "type": "string" }, "specialty": { "type": "string" }, "level": { "type": "string" }, "year": { "type": "string" }, "period": { "type": "string" }
             },
             "description": "Место учёбы, которое добавить в профиль"
           },
@@ -1366,29 +1369,49 @@ async fn tool_read_resume(app: &tauri::AppHandle, args: &serde_json::Value) -> R
     let title = r["title"].as_str().unwrap_or("(без названия)");
     out.push_str(&format!("Резюме «{}» (id: {})\n", title, id));
     out.push_str(&format!("Статус: {}. Обновлено: {}\n", r["status"]["name"].as_str().unwrap_or("?"), r["updated_at"].as_str().unwrap_or("").get(..10).unwrap_or("")));
+    // условия — в тех же полях, что и в резюме hh.ru
     if let Some(a) = r["salary"].as_u64().or(r["salary"]["amount"].as_u64()) {
         out.push_str(&format!("Зарплата: {} {}\n", a, r["salary"]["currency"].as_str().unwrap_or("RUR")));
+    }
+    if let Some(s) = r["area"]["name"].as_str() {
+        out.push_str(&format!("Город: {}\n", s));
+    }
+    let employment: Vec<&str> = r["employment"].as_array().map(|a| a.iter().filter_map(|x| x["name"].as_str()).collect()).unwrap_or_default();
+    if !employment.is_empty() {
+        out.push_str(&format!("Занятость: {}\n", employment.join(", ")));
+    }
+    let schedule: Vec<&str> = r["schedule"].as_array().map(|a| a.iter().filter_map(|x| x["name"].as_str()).collect()).unwrap_or_default();
+    if !schedule.is_empty() {
+        out.push_str(&format!("График: {}\n", schedule.join(", ")));
     }
     let skills: Vec<&str> = r["skill_set"].as_array().map(|a| a.iter().filter_map(|s| s.as_str()).collect()).unwrap_or_default();
     if !skills.is_empty() {
         out.push_str(&format!("Ключевые навыки: {}\n", skills.join(", ")));
     }
     if let Some(s) = r["about"].as_str().filter(|s| !s.trim().is_empty()) {
-        out.push_str(&format!("О себе: {}\n", s.trim()));
+        out.push_str(&format!("\nО себе:\n{}\n", s.trim()));
     }
+    // описания опыта не обрезаем — агент переносит их в профиль целиком
     if let Some(items) = r["experience"].as_array().filter(|a| !a.is_empty()) {
         out.push_str("\nОпыт:\n");
         for e in items {
             out.push_str(&format!(
-                "- {} | {} | {} — {}\n",
+                "\n### {} | {} | {} — {}\n",
                 e["company"].as_str().unwrap_or("?"),
                 e["position"].as_str().unwrap_or("?"),
                 e["start"].as_str().unwrap_or("?").get(..7).unwrap_or(""),
                 if e["current"].as_bool().unwrap_or(false) { "сейчас".into() } else { e["end"].as_str().unwrap_or("?").get(..7).unwrap_or("").to_string() }
             ));
+            if let Some(s) = e["company_url"].as_str() {
+                out.push_str(&format!("Сайт компании: {}\n", s));
+            }
             if let Some(s) = e["description"].as_str().filter(|s| !s.trim().is_empty()) {
                 let text: String = strip_tags(s).split_whitespace().collect::<Vec<_>>().join(" ");
-                out.push_str(&format!("  {}\n", text.chars().take(500).collect::<String>()));
+                let text = text.chars().take(8000).collect::<String>();
+                out.push_str(&text);
+                if !out.ends_with('\n') {
+                    out.push('\n');
+                }
             }
         }
     }
@@ -1396,13 +1419,30 @@ async fn tool_read_resume(app: &tauri::AppHandle, args: &serde_json::Value) -> R
         out.push_str("\nОбразование:\n");
         for e in items {
             out.push_str(&format!(
-                "- {} | {} | {}{}\n",
+                "- {} | {} | {}{}{}\n",
                 e["name"].as_str().unwrap_or("?"),
                 e["organization"].as_str().unwrap_or(""),
                 e["year"].as_u64().map(|y| y.to_string()).unwrap_or_default(),
-                e["specialty"].as_str().map(|s| format!(" | {}", s)).unwrap_or_default()
+                e["specialty"].as_str().map(|s| format!(" | {}", s)).unwrap_or_default(),
+                e["level"]["name"].as_str().map(|s| format!(" | {}", s)).unwrap_or_default()
             ));
         }
+    }
+    if let Some(items) = r["language"].as_array().filter(|a| !a.is_empty()) {
+        let langs: Vec<String> = items
+            .iter()
+            .map(|l| {
+                format!(
+                    "{} — {}",
+                    l["name"].as_str().unwrap_or("?"),
+                    l["level"]["name"].as_str().unwrap_or("?")
+                )
+            })
+            .collect();
+        out.push_str(&format!("\nЯзыки: {}\n", langs.join(", ")));
+    }
+    if let Some(s) = r["citizenship"].as_array().map(|a| a.iter().filter_map(|x| x["name"].as_str()).collect::<Vec<_>>().join(", ")).filter(|s| !s.is_empty()) {
+        out.push_str(&format!("Гражданство: {}\n", s));
     }
     Ok(out)
 }
@@ -1537,20 +1577,22 @@ async fn tool_update_profile(app: &tauri::AppHandle, args: &serde_json::Value) -
                 saved.push(format!("навыков: {}", added));
             }
         }
-        // коротко о себе — перезапись только если пусто или явно передано
-        if let Some(Some(s)) = pos.get("about").map(|v| v.as_str()) {
-            let s = s.trim();
-            if !s.is_empty() {
-                profile["about"] = json!(s);
-                saved.push("about".into());
+        // коротко о себе и пожелания — перезапись только непустым текстом
+        for key in ["about", "wishes"] {
+            if let Some(Some(s)) = pos.get(key).map(|v| v.as_str()) {
+                let s = s.trim();
+                if !s.is_empty() {
+                    profile[key] = json!(s);
+                    saved.push(key.into());
+                }
             }
         }
     }
 
     // структурированные элементы: опыт, образование, проекты
     for (key, arr_key, fields) in [
-        ("experience_add", "experience", &["company", "position", "period", "description", "achievements"][..]),
-        ("education_add", "education", &["institution", "specialty", "period"][..]),
+        ("experience_add", "experience", &["company", "position", "city", "period", "description", "achievements"][..]),
+        ("education_add", "education", &["institution", "specialty", "level", "year", "period"][..]),
         ("project_add", "projects", &["name", "role", "description"][..]),
     ] {
         if let Some(item) = args.get(key) {
@@ -1619,7 +1661,7 @@ fn profile_brief(profile: &serde_json::Value, max_notes: usize) -> String {
         out.push_str(&format!("\n## {}\n", title));
         for it in items {
             let mut parts: Vec<String> = Vec::new();
-            for f in ["company", "position", "institution", "specialty", "name", "role", "period"] {
+            for f in ["company", "position", "city", "institution", "specialty", "level", "name", "role", "period", "year"] {
                 if let Some(s) = it[f].as_str().filter(|s| !s.trim().is_empty()) {
                     parts.push(s.to_string());
                 }
@@ -1632,8 +1674,15 @@ fn profile_brief(profile: &serde_json::Value, max_notes: usize) -> String {
             }
         }
     }
+    if let Some(s) = profile["wishes"].as_str().filter(|s| !s.trim().is_empty()) {
+        out.push_str(&format!("\n## Пожелания и планы\n{}\n", s.trim()));
+    }
     if let Some(s) = profile["about"].as_str().filter(|s| !s.trim().is_empty()) {
         out.push_str(&format!("\n## О себе\n{}\n", s.trim()));
+    }
+    if let Some(items) = profile["languages"].as_array().filter(|a| !a.is_empty()) {
+        let names: Vec<&str> = items.iter().filter_map(|x| x.as_str()).collect();
+        out.push_str(&format!("\nЯзыки: {}\n", names.join(", ")));
     }
     if let Some(notes) = profile["notes"].as_array().filter(|a| !a.is_empty()) {
         let skip = notes.len().saturating_sub(max_notes);
@@ -1869,7 +1918,7 @@ fn build_system_prompt(app: &tauri::AppHandle, model: &str) -> String {
 Когда пользователь просит что-то сделать на hh.ru, прямо говори, что делаешь это от его имени.\n\n\
 ## Что ты знаешь о пользователе\n\n",
     ));
-    p.push_str(&profile_brief(&profile, 12));
+    p.push_str(&profile_brief(&profile, 40));
     // имя и резюме из hh.ru
     {
         let cache = profile_cache().lock().expect("mutex").clone();
@@ -1886,10 +1935,12 @@ fn build_system_prompt(app: &tauri::AppHandle, model: &str) -> String {
     p.push_str(
         "\n## Как пополнять знания о пользователе\n\n\
 Ты должен знать о пользователе как можно больше — это твоя база для любых его просьб. \
-Всё, что он рассказывает о себе (опыт, навыки, работа, учёба, планы, обстоятельства жизни, \
-предпочтения), — сохраняй в профиль через update_profile: структурированные данные — \
-в соответствующие поля, отдельные факты — в notes_add. Сохраняй только то, что пользователь \
-реально сообщил, без домыслов. После сохранения кратко упомяни, что запомнил. \
+Структурированные поля профиля повторяют поля резюме hh.ru — всё, что годится для резюме \
+(опыт, образование, навыки, языки), складывай туда. Всё остальное, что нельзя упаковать в форму \
+(желания, обстоятельства, причины, мечты, предостережения), — в notes_add и в wishes. \
+Форма не ограничивает твоё знание о человеке: если данных много, лучше лишняя заметка, \
+чем потерянный факт. Сохраняй только то, что пользователь реально сообщил, без домыслов. \
+После сохранения кратко упомяни, что запомнил. \
 Полный профиль читай инструментом read_profile; пользователь сам правит его на вкладке «Профиль».\n\n\
 Ты можешь сам узнавать пользователя в стиле интервью: когда разговор естественно заходит \
 о нём или данных явно не хватает, задавай короткие вопросы — 1–3 за раз, не анкету из \

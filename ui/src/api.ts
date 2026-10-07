@@ -107,10 +107,12 @@ export interface ProfileData {
     schedule?: string[];
     search_status?: string;
   };
-  experience?: { company?: string; position?: string; period?: string; description?: string; achievements?: string }[];
-  education?: { institution?: string; specialty?: string; period?: string }[];
+  experience?: { company?: string; position?: string; city?: string; period?: string; description?: string; achievements?: string }[];
+  education?: { institution?: string; specialty?: string; level?: string; year?: string; period?: string }[];
+  languages?: string[];
   skills?: string[];
   projects?: { name?: string; role?: string; description?: string }[];
+  wishes?: string;
   about?: string;
   notes?: { topic?: string | null; text: string; added_at?: number }[];
 }

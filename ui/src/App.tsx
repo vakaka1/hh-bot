@@ -170,6 +170,7 @@ function ListCard({
 const EXPERIENCE_FIELDS = [
   { key: "company", label: "Компания" },
   { key: "position", label: "Должность" },
+  { key: "city", label: "Город" },
   { key: "period", label: "Период (например, 2021 — сейчас)" },
   { key: "description", label: "Чем занимались", long: true },
   { key: "achievements", label: "Достижения", long: true },
@@ -178,6 +179,8 @@ const EXPERIENCE_FIELDS = [
 const EDUCATION_FIELDS = [
   { key: "institution", label: "Учебное заведение" },
   { key: "specialty", label: "Специальность" },
+  { key: "level", label: "Уровень (высшее, среднее и т.д.)" },
+  { key: "year", label: "Год окончания" },
   { key: "period", label: "Годы учёбы" },
 ];
 
@@ -533,6 +536,15 @@ function Profile() {
           </div>
 
           <div className="about-form">
+            <label>
+              Пожелания и планы
+              <textarea
+                rows={3}
+                value={profile.wishes || ""}
+                onChange={(e) => patch({ wishes: e.target.value })}
+                placeholder="Какая работа нравится, окружение, карьерные планы, чего не хочется"
+              />
+            </label>
             <label>
               Коротко о себе
               <textarea
