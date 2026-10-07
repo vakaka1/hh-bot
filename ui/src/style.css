@@ -1184,3 +1184,14 @@ html[data-theme="dark"] .hljs-title.function_, html[data-theme="dark"] .hljs-bui
 .note-card textarea:focus { outline: none; }
 .note-card textarea::placeholder { color: var(--muted); }
 .note-card .link-btn { white-space: nowrap; }
+
+/* пометка демо-режима в шапке */
+.demo-badge {
+  margin-left: 10px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px dashed var(--border);
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}

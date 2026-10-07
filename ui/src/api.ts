@@ -1,5 +1,7 @@
 // Демо-режим для предпросмотра интерфейса без Tauri (?demo в адресе)
-const demo = typeof location !== "undefined" && location.search.includes("demo");
+// демо-режим для предпросмотра интерфейса без Tauri (?demo в адресе)
+export const isDemo = typeof location !== "undefined" && location.search.includes("demo");
+const demo = isDemo;
 
 // Channel импортируем из пакета — в глобальном бандле Tauri v2 он
 // недоступен через window.__TAURI__.ipc, из-за чего стриминг «не видел» Tauri

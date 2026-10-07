@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { api, AgentConfig, AgentMode, AgentStore, Me, ProfileData, Resume, resumeHidden } from "./api";
+import { api, isDemo, AgentConfig, AgentMode, AgentStore, Me, ProfileData, Resume, resumeHidden } from "./api";
 import ModelSelect from "./ModelSelect";
 import Chat from "./Chat";
 
@@ -851,6 +851,7 @@ export default function App() {
           <span className="logo-text">
             HH-bot<span className="logo-accent">.</span>
           </span>
+          {isDemo && <span className="demo-badge">Демо — данные ненастоящие</span>}
         </div>
         <nav className="pill-nav">
           <button className={"tab-btn" + (tab === "chat" ? " active" : "")} onClick={() => setTab("chat")}>
