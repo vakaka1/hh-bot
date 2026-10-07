@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 // ---------------------------------------------------------------- выбор модели
 
@@ -9,6 +9,8 @@ export default function ModelSelect({
   dropUp = false,
   wide = false,
   title,
+  label,
+  labelNode,
 }: {
   value: string;
   options: string[];
@@ -16,6 +18,10 @@ export default function ModelSelect({
   dropUp?: boolean;
   wide?: boolean;
   title?: string;
+  // подпись для пункта списка (например, «провайдер · модель»)
+  label?: (m: string) => string;
+  // то же, но с разметкой: имя провайдера приглушённым цветом
+  labelNode?: (m: string) => ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -46,7 +52,9 @@ export default function ModelSelect({
         onClick={() => setOpen((o) => !o)}
         title={title}
       >
-        <span className="ms-label">{value || "Выберите модель"}</span>
+        <span className="ms-label">
+          {labelNode ? labelNode(value) : label ? label(value) : value || "Выберите модель"}
+        </span>
         <svg className="ms-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
           <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
@@ -63,7 +71,7 @@ export default function ModelSelect({
                 setOpen(false);
               }}
             >
-              <span className="ms-item-label">{m}</span>
+              <span className="ms-item-label">{labelNode ? labelNode(m) : label ? label(m) : m}</span>
               {m === value && (
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                   <path d="M5 13l4 4L19 7" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />

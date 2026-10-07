@@ -51,11 +51,13 @@ const mock: Record<string, unknown> = {
     ],
   },
   agent_test: { models: ["gpt-4o-mini", "gpt-4o", "gpt-4.1", "o3-mini"] },
+  agents_save: null,
   set_job_search_status: null,
   profile_save: null,
   web_action: null,
   chats_list: [],
   chat_get: [],
+  chats_clear: null,
   agents_load: {
     agent_model: null,
     providers: [
@@ -131,6 +133,10 @@ export interface AgentConfig {
   base_url: string;
   api_key: string;
   model: string;
+  // лимит запросов к провайдеру в минуту; 0 — без лимита
+  rate_limit?: number;
+  // модели, скрытые из списков
+  ignored_models?: string[];
 }
 
 export interface AgentStore {
@@ -144,6 +150,51 @@ export interface AgentStore {
 export interface AuthStatus {
   logged_in: boolean;
   expires_at?: number;
+}
+
+// ---------------------------------------------------------------- модели всех провайдеров
+
+// Запись в общем списке моделей: модель + провайдер, у которого её брать
+export interface ModelEntry {
+  model: string;        // имя модели для API
+  provider: number;     // индекс провайдера в store.providers
+  providerName: string;
+  value: string;        // ключ селектора: "provider::model"
+}
+
+export function modelValue(provider: number, model: string): string {
+  return provider + "::" + model;
+}
+
+export function parseModelValue(v: string): { provider: number | null; model: string } {
+  const i = v.indexOf("::");
+  if (i > -1) return { provider: Number(v.slice(0, i)), model: v.slice(i + 2) };
+  return { provider: null, model: v };
+}
+
+// Список моделей со всех провайдеров; игнорируемые модели вычтены,
+// при недоступности одного провайдера остальные всё равно попадают в список
+export async function loadAllModels(store: AgentStore): Promise<ModelEntry[]> {
+  const lists = await Promise.all(
+    store.providers.map(async (p, i): Promise<ModelEntry[]> => {
+      try {
+        const res = await api.agentTest(p);
+        const name = p.name || p.base_url;
+        const ignored = p.ignored_models || [];
+        return (res.models || [])
+          .filter((m) => !ignored.includes(m))
+          .map((m) => ({
+          model: m,
+          provider: i,
+          providerName: name,
+          value: modelValue(i, m),
+        }));
+      } catch {
+        return [];
+      }
+    })
+  );
+  return lists.flat();
 }
 
 // ---------------------------------------------------------------- команды
@@ -168,6 +219,7 @@ export const api = {
   chatsList: () => invoke<ChatSummary[]>("chats_list"),
   chatGet: (chatId: string) => invoke<StoredChatMsg[]>("chat_get", { chatId }),
   chatDelete: (chatId: string) => invoke<void>("chat_delete", { chatId }),
+  chatsClear: () => invoke<void>("chats_clear"),
   chatRename: (chatId: string, title: string) =>
     invoke<void>("chat_rename", { chatId, title }),
   chatStop: (chatId: string) => {
@@ -184,8 +236,14 @@ export const api = {
     ),
   chatConfirm: (chatId: string, callId: string, decision: "allow" | "deny") =>
     invoke<void>("chat_confirm", { chatId, callId, decision }),
-  chatStartStream: (chatId: string, message: string, model: string, mode: AgentMode, onEvent: (e: ChatEvent) => void) =>
-    chatStartStream(chatId, message, model, mode, onEvent),
+  chatStartStream: (
+    chatId: string,
+    message: string,
+    model: string,
+    provider: number | null,
+    mode: AgentMode,
+    onEvent: (e: ChatEvent) => void
+  ) => chatStartStream(chatId, message, model, provider, mode, onEvent),
 };
 
 // ---------------------------------------------------------------- чат
@@ -230,6 +288,7 @@ export function chatStartStream(
   chatId: string,
   message: string,
   model: string,
+  provider: number | null,
   mode: AgentMode,
   onEvent: (e: ChatEvent) => void
 ): Promise<void> {
@@ -240,6 +299,7 @@ export function chatStartStream(
     chatId,
     message,
     model,
+    provider,
     mode,
     onEvent: channel,
   });

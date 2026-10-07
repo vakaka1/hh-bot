@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { api, AgentStore, AgentMode, AGENT_MODES, ChatEvent, ChatSummary } from "./api";
+import { api, AgentStore, AgentMode, AGENT_MODES, ChatEvent, ChatSummary, ModelEntry, loadAllModels, parseModelValue } from "./api";
 import ModelSelect from "./ModelSelect";
 import Markdown from "./Markdown";
 
@@ -142,7 +142,7 @@ export default function Chat({
   const [entries, setEntries] = useState<ChatEntry[]>([]);
   const [text, setText] = useState("");
   const [streaming, setStreaming] = useState(false);
-  const [models, setModels] = useState<string[]>([]);
+  const [modelEntries, setModelEntries] = useState<ModelEntry[]>([]);
   const [chatModel, setChatModel] = useState(
     () => localStorage.getItem("chat_model") || ""
   );
@@ -157,33 +157,70 @@ export default function Chat({
       ? store.providers[store.active]
       : null;
 
-  // список моделей активного провайдера
+  // сигнатура провайдеров: адреса, ключи и игнорируемые модели —
+  // при любом изменении список моделей перечитывается заново
+  const providersSig = JSON.stringify(
+    store.providers.map((p) => [p.base_url, p.api_key, p.ignored_models])
+  );
+
+  // общий список моделей всех провайдеров (игнорируемые вычтены);
+  // выбранная модель может принадлежать любому провайдеру — запрос идёт к нему
   useEffect(() => {
-    if (!active) return;
+    if (!store.providers.length) return;
     let cancelled = false;
-    api
-      .agentTest(active)
-      .then((res) => {
+    loadAllModels(store)
+      .then((list) => {
         if (cancelled) return;
-        setModels(res.models || []);
+        setModelEntries(list);
         setChatModel((cur) => {
-          if (cur) return cur;
-          const def = store.agent_model || active.model || (res.models || [])[0] || "";
-          if (def) localStorage.setItem("chat_model", def);
-          return def;
+          // уже валидный выбор вида «провайдер::модель»
+          if (cur && list.some((e) => e.value === cur)) return cur;
+          const legacy = parseModelValue(cur);
+          const pick =
+            (legacy.model && list.find((e) => e.model === legacy.model)) ||
+            (store.agent_model && list.find((e) => e.model === store.agent_model)) ||
+            (active?.model && list.find((e) => e.model === active.model)) ||
+            list[0];
+          const val = pick?.value || cur;
+          if (val) localStorage.setItem("chat_model", val);
+          return val;
         });
       })
       .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, [active?.base_url, active?.api_key]);
+  }, [providersSig]);
 
-  // история чатов
+  // история чатов. Порядок в списке стабильный, пока приложение открыто:
+  // обновление чата не перемещает его, новые появляются сверху
   function refreshChats() {
-    api.chatsList().then(setChats).catch(() => {});
+    api
+      .chatsList()
+      .then((list) =>
+        setChats((prev) => {
+          const order = new Map(prev.map((c, i) => [c.id, i]));
+          const known = list
+            .filter((c) => order.has(c.id))
+            .sort((a, b) => order.get(a.id)! - order.get(b.id)!);
+          const fresh = list.filter((c) => !order.has(c.id));
+          return [...fresh, ...known];
+        })
+      )
+      .catch(() => {});
   }
   useEffect(refreshChats, []);
+
+  // очистка истории из настроек: обновляем список и закрываем открытый чат
+  useEffect(() => {
+    const onCleared = () => {
+      setChats([]);
+      setCurrentId(null);
+      setEntries([]);
+    };
+    window.addEventListener("hh-chats-cleared", onCleared);
+    return () => window.removeEventListener("hh-chats-cleared", onCleared);
+  }, []);
 
   // автоскролл: держимся низа, пока пользователь сам не отлистал вверх
   function scrollToEnd(force = false) {
@@ -363,7 +400,9 @@ export default function Chat({
     ]);
 
     try {
-      await api.chatStartStream(id, message, chatModel, mode, handleEvent);
+      // модель хранится как «провайдер::модель» — запрос уходит её провайдеру
+      const sel = parseModelValue(chatModel);
+      await api.chatStartStream(id, message, sel.model, sel.provider, mode, handleEvent);
     } catch (e) {
       handleEvent({ type: "error", message: String(e) });
     } finally {
@@ -511,13 +550,14 @@ export default function Chat({
             }}
             placeholder="Напишите сообщение…"
           />
-          {models.length > 0 && (
+          {modelEntries.length > 0 && (
             <ModelSelect
               value={chatModel}
-              options={models}
+              options={modelEntries.map((e) => e.value)}
               onChange={pickModel}
               dropUp
               title="Модель для чата"
+              label={(v) => modelEntries.find((x) => x.value === v)?.model || v}
             />
           )}
 

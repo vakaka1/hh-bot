@@ -40,6 +40,12 @@ struct AgentConfig {
     base_url: String,
     api_key: String,
     model: String,
+    // лимит запросов к провайдеру в минуту; 0 — без лимита
+    #[serde(default)]
+    rate_limit: u32,
+    // модели, которые не показывать и не предлагать в списках
+    #[serde(default)]
+    ignored_models: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -639,6 +645,49 @@ fn profile_save(app: tauri::AppHandle, data: serde_json::Value) -> Result<(), St
 
 // ---------------------------------------------------------------- agents (много провайдеров)
 
+// ---------------------------------------------------------------- rate limiting (на провайдера)
+
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64
+}
+
+// Окна последних запросов по ключу провайдера (base_url)
+fn rate_slots() -> &'static Mutex<HashMap<String, Vec<i64>>> {
+    static SLOTS: std::sync::OnceLock<Mutex<HashMap<String, Vec<i64>>>> =
+        std::sync::OnceLock::new();
+    SLOTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+// Ждёт, пока можно сделать следующий запрос, не превышая limit запросов
+// в минуту для этого провайдера. limit == 0 — лимит не задан.
+async fn rate_limit_wait(key: &str, limit: u32) {
+    if limit == 0 {
+        return;
+    }
+    loop {
+        let wait_ms = {
+            let mut slots = rate_slots().lock().expect("mutex");
+            let cur = now_ms();
+            let win = slots.entry(key.to_string()).or_default();
+            win.retain(|t| cur - *t < 60_000);
+            if (win.len() as u32) < limit {
+                win.push(cur);
+                0
+            } else {
+                // ждём, пока в окне не освободится место
+                (60_000 - (cur - win[0]) + 50) as u64
+            }
+        };
+        if wait_ms == 0 {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
+    }
+}
+
 #[tauri::command]
 fn agents_load(app: tauri::AppHandle) -> Result<AgentStore, String> {
     Ok(read_json(agents_path(&app)?).unwrap_or_default())
@@ -753,6 +802,12 @@ fn chat_delete(app: tauri::AppHandle, chat_id: String) -> Result<(), String> {
     let mut chats = load_chats(&app);
     chats.retain(|c| c.id != chat_id);
     save_chats(&app, &chats)
+}
+
+// полная очистка истории чатов
+#[tauri::command]
+fn chats_clear(app: tauri::AppHandle) -> Result<(), String> {
+    save_chats(&app, &Vec::new())
 }
 
 #[tauri::command]
@@ -1883,10 +1938,9 @@ fn build_system_prompt(app: &tauri::AppHandle, model: &str) -> String {
     let model_display = if model.trim().is_empty() { "неизвестной ИИ-модели" } else { model.trim() };
     p.push_str(&format!(
         "## Кто ты\n\n\
-Ты — ИИ-агент HH-bot: программный помощник, а не человек. Ты работаешь на {model_display}. \
+Ты — ИИ-агент внутри приложения HH-bot. Ты работаешь на {model_display}. \
 Если пользователь спросит, кто ты или на какой модели ты работаешь, отвечай честно и прямо: \
 «Я ИИ-агент, работающий на модели {model_display} внутри приложения HH-bot». \
-Никогда не притворяйся человеком и не скрывай, что ты ИИ.\n\n\
 Помогаешь пользователю с любыми задачами: отвечаешь на вопросы, ищешь информацию в интернете, \
 объясняешь, пишешь тексты, а также умеешь работать с hh.ru и профилем пользователя (подробности ниже). \
 Ты НЕ зациклен на поиске работы: темами труда занимаешься только когда пользователь сам \
@@ -2153,14 +2207,20 @@ async fn chat_start(
     message: String,
     model: Option<String>,
     mode: Option<String>,
+    provider: Option<usize>,
     on_event: tauri::ipc::Channel<serde_json::Value>,
 ) -> Result<(), String> {
     let mode = mode.unwrap_or_else(|| "chat".into());
     let store: AgentStore = read_json(agents_path(&app)?).ok_or("Провайдеры не настроены")?;
-    let active = store
-        .active
-        .and_then(|i| store.providers.get(i))
-        .ok_or("Не выбран ИИ-провайдер — добавьте его в Настройках")?;
+    // провайдер выбирается под модель: если модель чужого провайдера —
+    // запрос пойдёт к нему, а не к активному
+    let (_, active) = match provider.and_then(|i| store.providers.get(i).cloned().map(|p| (i, p))) {
+        Some((i, p)) => (i, p),
+        None => match store.active.and_then(|i| store.providers.get(i).cloned()).map(|p| (store.active.unwrap_or(0), p)) {
+            Some(x) => x,
+            None => return Err("Не выбран ИИ-провайдер — добавьте его в Настройках".into()),
+        },
+    };
     let base = active.base_url.trim_end_matches('/').to_string();
     let api_key = active.api_key.clone();
     let model = model
@@ -2198,6 +2258,7 @@ async fn chat_start(
         &mode,
         &base,
         &api_key,
+        active.rate_limit,
         store.search_url.as_deref(),
         &cancelled,
         &on_event,
@@ -2228,6 +2289,7 @@ async fn chat_run(
     mode: &str,
     base: &str,
     api_key: &str,
+    rate_limit: u32,
     search_url: Option<&str>,
     cancelled: &AtomicBool,
     on_event: &tauri::ipc::Channel<serde_json::Value>,
@@ -2361,6 +2423,8 @@ async fn chat_run(
         }
 
         let step = {
+            // каждый шаг — один запрос к провайдеру, вписываемся в его лимит
+            rate_limit_wait(base, rate_limit).await;
             let log = &parts_log;
             stream_step(
                 base,
@@ -2598,6 +2662,7 @@ fn main() {
             chats_list,
             chat_get,
             chat_delete,
+            chats_clear,
             chat_rename,
             chat_start,
             chat_stop,

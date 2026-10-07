@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api, isDemo, AgentConfig, AgentMode, AgentStore, Me, ProfileData, Resume, resumeHidden } from "./api";
 import ModelSelect from "./ModelSelect";
+import type { ModelEntry } from "./api";
+import { loadAllModels } from "./api";
 import Chat from "./Chat";
 
 type Screen = "loading" | "login" | "app";
@@ -437,23 +439,28 @@ function Settings({
       ? store.providers[store.active]
       : null;
 
-  const [models, setModels] = useState<string[]>([]);
+  // общий список моделей всех провайдеров — основную модель агента можно
+  // взять у любого провайдера, а не только у активного
+  const [modelEntries, setModelEntries] = useState<ModelEntry[]>([]);
   const [modelsErr, setModelsErr] = useState("");
+  const providersSig = JSON.stringify(
+    store.providers.map((p) => [p.base_url, p.api_key, p.ignored_models])
+  );
 
   useEffect(() => {
-    if (!active) return;
+    if (!store.providers.length) return;
     let cancelled = false;
     setModelsErr("");
-    api
-      .agentTest(active)
-      .then((res) => !cancelled && setModels(res.models || []))
+    loadAllModels(store)
+      .then((list) => !cancelled && setModelEntries(list))
       .catch((e) => !cancelled && setModelsErr(String(e)));
     return () => {
       cancelled = true;
     };
-  }, [active?.base_url, active?.api_key]);
+  }, [providersSig]);
 
   const agentModel = store.agent_model || active?.model || "";
+  const selectedEntry = modelEntries.find((e) => e.model === agentModel);
 
   return (
     <div className="settings-col">
@@ -498,10 +505,10 @@ function Settings({
             </div>
             <label>
               Основная модель агента
-              {models.length > 0 ? (
+              {modelEntries.length > 0 ? (
                 <ModelSelect
-                  value={agentModel}
-                  options={models}
+                  value={selectedEntry ? selectedEntry.model : agentModel}
+                  options={modelEntries.map((e) => e.model)}
                   onChange={(m) => onAgentModel(m || null)}
                   wide
                 />
@@ -525,6 +532,53 @@ function Settings({
       </div>
 
       <SearchCard url={store.search_url || ""} onSave={onSearchUrl} />
+
+      <ChatsCard />
+    </div>
+  );
+}
+
+function ChatsCard() {
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  async function clearAll() {
+    setBusy(true);
+    try {
+      await api.chatsClear();
+      window.dispatchEvent(new Event("hh-chats-cleared"));
+      setConfirming(false);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="card">
+      <div className="card-head">
+        <h2>Чаты</h2>
+      </div>
+      <p className="hint">
+        Полностью очищает историю чатов с агентом. Открытые сейчас переписки тоже удалятся —
+        отменить это нельзя.
+      </p>
+      {confirming ? (
+        <div className="danger-confirm">
+          <span className="danger-question">Удалить всю историю чатов?</span>
+          <button className="ghost-btn small" onClick={() => setConfirming(false)} disabled={busy}>
+            Отмена
+          </button>
+          <button className="danger-btn small" onClick={clearAll} disabled={busy}>
+            {busy ? "Удаляем…" : "Удалить"}
+          </button>
+        </div>
+      ) : (
+        <div className="clear-row">
+          <button className="danger-btn small" onClick={() => setConfirming(true)}>
+            Удалить все чаты
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -622,7 +676,7 @@ function Providers({
   function add() {
     setStore((s) => ({
       ...s,
-      providers: [...s.providers, { name: "", base_url: "", api_key: "", model: "" }],
+      providers: [...s.providers, { name: "", base_url: "", api_key: "", model: "", rate_limit: 0, ignored_models: [] }],
       active: s.active === null && s.providers.length === 0 ? 0 : s.active,
     }));
   }
@@ -761,6 +815,61 @@ function ProviderCard({
         API-ключ
         <input type="password" value={cfg.api_key} onChange={set("api_key")} onBlur={fetchModels} placeholder="sk-..." />
       </label>
+      <label>
+        Лимит запросов в минуту
+        <input
+          type="number"
+          min={0}
+          value={cfg.rate_limit || 0}
+          onChange={(e) =>
+            onChange({ ...cfg, rate_limit: Math.max(0, Number(e.target.value) || 0) })
+          }
+          placeholder="0 — без лимита"
+        />
+      </label>
+      <p className="hint">
+        Ограничение запросов к этому провайдеру, чтобы не упереться в его лимиты.
+        Например, 30 — не больше 30 запросов в минуту. 0 — без ограничения.
+      </p>
+      {models.length > 0 ? (
+        <div className="ignore-models">
+          <span className="ignore-title">Показывать в списке моделей</span>
+          <div className="ignore-list">
+            {models.map((m) => {
+              const ignored = (cfg.ignored_models || []).includes(m);
+              return (
+                <label key={m} className="check">
+                  <input
+                    type="checkbox"
+                    checked={!ignored}
+                    onChange={() =>
+                      onChange({
+                        ...cfg,
+                        ignored_models: ignored
+                          ? (cfg.ignored_models || []).filter((x) => x !== m)
+                          : [...(cfg.ignored_models || []), m],
+                      })
+                    }
+                  />
+                  <span className="check-label">{m}</span>
+                </label>
+              );
+            })}
+          </div>
+          {(cfg.ignored_models || []).length > 0 && (
+            <p className="hint">
+              Снято с показа: {(cfg.ignored_models || []).join(", ")} — эти модели не появятся
+              в списках моделей.
+            </p>
+          )}
+        </div>
+      ) : (
+        <p className="hint">
+          {loading
+            ? "Загружаем список моделей…"
+            : "Список моделей недоступен — игнорирование недоступно, модель можно указать вручную ниже."}
+        </p>
+      )}
       <label>
         Модель
         {loading ? (
