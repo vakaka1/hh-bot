@@ -1147,7 +1147,28 @@ html[data-theme="dark"] .hljs-title.function_, html[data-theme="dark"] .hljs-bui
   margin-bottom: 8px;
 }
 .list-card-title { font-weight: 600; font-size: 13.5px; }
-.note-row { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
-.note-row input { flex: 1; }
-.note-row .note-topic { flex: 0 0 130px; }
+.note-row {
+  display: grid;
+  grid-template-columns: 150px 1fr auto;
+  gap: 10px;
+  align-items: start;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  margin-top: 10px;
+  background: var(--surface);
+}
+.note-row .note-topic { margin: 0; }
+.note-row textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  resize: vertical;
+}
+.note-row textarea:focus { outline: none; border-color: var(--accent, var(--border)); }
 .note-row .link-btn { white-space: nowrap; }

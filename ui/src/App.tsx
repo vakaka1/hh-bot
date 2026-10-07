@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, AgentConfig, AgentMode, AgentStore, Me, ProfileData, Resume, resumeHidden } from "./api";
 import ModelSelect from "./ModelSelect";
 import Chat from "./Chat";
@@ -79,7 +79,7 @@ function Profile() {
   const [resAction, setResAction] = useState<{ text: string; ok: boolean } | null>(null);
 
   const [profile, setProfile] = useState<ProfileData>({});
-  const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [saveErr, setSaveErr] = useState("");
   const [statusBusy, setStatusBusy] = useState(false);
   const [statusErr, setStatusErr] = useState("");
@@ -118,9 +118,29 @@ function Profile() {
   // факты о себе. Структуру для резюме агент ведёт сам из разговора.
   const notes = profile.notes || [];
 
+  // знания сохраняются автоматически: агент пополняет их сам, поэтому
+  // кнопки «Сохранить» нет — правки уходят в хранилище сами
+  const profileRef = useRef(profile);
+  profileRef.current = profile;
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  function scheduleSave() {
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    setSaving(true);
+    saveTimer.current = setTimeout(async () => {
+      try {
+        await api.profileSave(profileRef.current);
+        setSaveErr("");
+      } catch (e) {
+        setSaveErr(String(e));
+      } finally {
+        setSaving(false);
+      }
+    }, 800);
+  }
+
   function setNotes(next: ProfileData["notes"]) {
     setProfile((prev) => ({ ...prev, notes: next }));
-    setSaved(false);
+    scheduleSave();
   }
 
   function addNote() {
@@ -135,16 +155,6 @@ function Profile() {
     setNotes(notes.filter((_, i) => i !== index));
   }
 
-  async function saveNotes() {
-    setSaveErr("");
-    try {
-      await api.profileSave({ ...profile, notes });
-      setSaved(true);
-    } catch (e) {
-      setSaveErr(String(e));
-    }
-  }
-
   // Смена статуса поиска: сразу меняем на hh.ru и сохраняем локально.
   async function changeSearchStatus(id: string) {
     const prev = profile.positions?.search_status || "";
@@ -157,7 +167,6 @@ function Profile() {
       const next = { ...profile, positions: { ...profile.positions, search_status: id } };
       setProfile(next);
       await api.profileSave(next);
-      setSaved(true);
     } catch (e) {
       setProfile((p) => ({ ...p, positions: { ...p.positions, search_status: prev } }));
       setStatusErr(String(e));
@@ -190,50 +199,6 @@ function Profile() {
   return (
     <div className="profile-grid">
       <div className="profile-col">
-        <div className="card">
-          <div className="card-head">
-            <h2>Знания о вас</h2>
-            <button className="btn-primary small" onClick={saveNotes} disabled={saved}>
-              {saved ? "Сохранено" : "Сохранить"}
-            </button>
-          </div>
-          <p className="hint">
-            Здесь агент хранит всё, что узнал о вас: рассказывайте о себе в чате — он запомнит
-            опыт, навыки, желания, обстоятельства. Из этих знаний он потом соберёт резюме.
-            Можно добавить или поправить факты и вручную.
-          </p>
-          {notes.length === 0 && (
-            <p className="hint">
-              Пока ничего. Начните с чата: просто расскажите агенту о себе.
-            </p>
-          )}
-          {notes.map((n, i) => (
-            <div className="note-row" key={i}>
-              <input
-                className="note-topic"
-                value={n.topic || ""}
-                onChange={(e) => patchNote(i, { topic: e.target.value })}
-                placeholder="Тема"
-              />
-              <textarea
-                rows={2}
-                value={n.text}
-                onChange={(e) => patchNote(i, { text: e.target.value })}
-                placeholder="Факт"
-              />
-              <button className="link-btn" onClick={() => removeNote(i)}>
-                Удалить
-              </button>
-            </div>
-          ))}
-          <div className="row" style={{ marginTop: 10 }}>
-            <button className="ghost-btn small" onClick={addNote}>
-              + Добавить факт
-            </button>
-          </div>
-          {saveErr && <p className="status err">{saveErr}</p>}
-        </div>
-
         <div className="card">
           <div className="card-head">
             <h2>Информация из профиля hh.ru</h2>
@@ -276,6 +241,48 @@ function Profile() {
             </div>
             {statusErr && <p className="status err">{statusErr}</p>}
           </div>
+        </div>
+
+        <div className="card">
+          <div className="card-head">
+            <h2>Знания о вас</h2>
+            {saving && <span className="hint">Сохраняем…</span>}
+          </div>
+          <p className="hint">
+            Здесь агент хранит всё, что узнал о вас: рассказывайте о себе в чате — он запомнит
+            опыт, навыки, желания, обстоятельства. Из этих знаний он потом соберёт резюме.
+            Можно добавить или поправить факты и вручную.
+          </p>
+          {notes.length === 0 && (
+            <p className="hint">
+              Пока ничего. Начните с чата: просто расскажите агенту о себе.
+            </p>
+          )}
+          {notes.map((n, i) => (
+            <div className="note-row" key={i}>
+              <input
+                className="note-topic"
+                value={n.topic || ""}
+                onChange={(e) => patchNote(i, { topic: e.target.value })}
+                placeholder="Тема"
+              />
+              <textarea
+                rows={2}
+                value={n.text}
+                onChange={(e) => patchNote(i, { text: e.target.value })}
+                placeholder="Факт"
+              />
+              <button className="link-btn" onClick={() => removeNote(i)}>
+                Удалить
+              </button>
+            </div>
+          ))}
+          <div className="row" style={{ marginTop: 10 }}>
+            <button className="ghost-btn small" onClick={addNote}>
+              + Добавить факт
+            </button>
+          </div>
+          {saveErr && <p className="status err">{saveErr}</p>}
         </div>
       </div>
 

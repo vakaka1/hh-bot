@@ -1977,63 +1977,36 @@ fn build_system_prompt(app: &tauri::AppHandle, model: &str) -> String {
     p
 }
 
-// ---------------------------------------------------------------- стриминг chat/completions с инструментами
-
-#[derive(Deserialize)]
-struct StreamDelta {
-    #[serde(default)]
-    content: Option<String>,
-    // «думающие» модели (DeepSeek, GLM, Qwen и др.)
-    #[serde(default)]
-    reasoning_content: Option<String>,
-    #[serde(default, alias = "reasoning")]
-    reasoning: Option<String>,
-    #[serde(default)]
-    tool_calls: Option<Vec<StreamToolCall>>,
-}
-
-#[derive(Deserialize)]
-struct StreamToolCall {
-    #[serde(default)]
-    index: usize,
-    #[serde(default)]
-    id: Option<String>,
-    function: StreamToolFn,
-}
-
-#[derive(Deserialize)]
-struct StreamToolFn {
-    #[serde(default)]
-    name: Option<String>,
-    #[serde(default)]
-    arguments: String,
-}
+// ---------------------------------------------------------------- стриминг Responses API с инструментами
 
 struct StepResult {
     content: String,
-    tool_calls: Vec<serde_json::Value>, // собранные tool_calls в формате API
+    // вызовы инструментов в формате Responses API: call_id, name, arguments
+    function_calls: Vec<serde_json::Value>,
 }
 
-// один шаг стриминга; возвращает finish_reason
+// один шаг стриминга Responses API; возвращает текст и вызовы инструментов
 async fn stream_step(
     base: &str,
     api_key: &str,
     model: &str,
-    messages: &[serde_json::Value],
+    instructions: &str,
+    input: &[serde_json::Value],
     tools: &serde_json::Value,
     cancelled: &AtomicBool,
     on_delta: &(dyn Fn(&str) + Send + Sync),
     on_reasoning: &(dyn Fn(&str) + Send + Sync),
-) -> Result<(String, StepResult), String> {
+) -> Result<StepResult, String> {
     let body = serde_json::json!({
         "model": model,
-        "messages": messages,
+        "instructions": instructions,
+        "input": input,
         "stream": true,
         "tools": tools,
     });
 
     let mut resp = http_client()
-        .post(format!("{}/chat/completions", base))
+        .post(format!("{}/responses", base))
         .bearer_auth(api_key.trim())
         .json(&body)
         .send()
@@ -2045,15 +2018,24 @@ async fn stream_step(
         let text = resp.text().await.unwrap_or_default();
         let msg = serde_json::from_str::<serde_json::Value>(&text)
             .ok()
-            .and_then(|v| v["error"]["message"].as_str().map(|s| s.to_string()))
+            .and_then(|v| {
+                v["error"]["message"].as_str().map(|s| s.to_string())
+                    .or_else(|| v["message"].as_str().map(|s| s.to_string()))
+            })
             .unwrap_or_else(|| text.chars().take(300).collect());
         return Err(format!("Провайдер вернул {}: {}", status, msg));
     }
 
     let mut content = String::new();
-    let mut finish = String::new();
-    // tool_calls собираем по index
-    let mut tc: Vec<(usize, String, String, String)> = Vec::new(); // (index, id, name, args)
+    // вызовы инструментов накапливаем по item_id из событий; финальный
+    // список берём из response.completed, если провайдер его прислал
+    struct PendingCall {
+        call_id: String,
+        name: String,
+        args: String,
+    }
+    let mut pending: Vec<(String, PendingCall)> = Vec::new(); // (item_id, call)
+    let mut final_calls: Option<Vec<serde_json::Value>> = None;
 
     let mut buf = String::new();
     loop {
@@ -2081,63 +2063,120 @@ async fn stream_step(
             buf.drain(..pos + 1);
             let Some(data) = line.strip_prefix("data:") else { continue };
             let data = data.trim();
-            if data == "[DONE]" {
+            if data.is_empty() || data == "[DONE]" {
                 continue;
             }
             let Ok(v) = serde_json::from_str::<serde_json::Value>(data) else { continue };
-            if let Some(f) = v["choices"][0]["finish_reason"].as_str() {
-                finish = f.to_string();
-            }
-            let delta: Option<StreamDelta> =
-                serde_json::from_value(v["choices"][0]["delta"].clone()).ok();
-            if let Some(d) = delta {
-                if let Some(c) = d.reasoning_content.as_ref().or(d.reasoning.as_ref()) {
-                    if !c.is_empty() {
-                        on_reasoning(c);
+            let event_type = v["type"].as_str().unwrap_or("");
+            match event_type {
+                "response.output_text.delta" => {
+                    if let Some(c) = v["delta"].as_str() {
+                        if !c.is_empty() {
+                            content.push_str(c);
+                            on_delta(c);
+                        }
                     }
                 }
-                if let Some(c) = &d.content {
-                    if !c.is_empty() {
-                        content.push_str(c);
-                        on_delta(c);
+                // «думающие» модели: полные размышления и их краткая сводка
+                "response.reasoning_text.delta" | "response.reasoning_summary_text.delta" => {
+                    if let Some(c) = v["delta"].as_str() {
+                        if !c.is_empty() {
+                            on_reasoning(c);
+                        }
                     }
                 }
-                if let Some(calls) = &d.tool_calls {
-                    for call in calls {
-                        while tc.len() <= call.index {
-                            tc.push((tc.len(), String::new(), String::new(), String::new()));
-                        }
-                        let e = &mut tc[call.index];
-                        if let Some(id) = &call.id {
-                            if !id.is_empty() {
-                                e.1 = id.clone();
-                            }
-                        }
-                        if let Some(n) = &call.function.name {
-                            if !n.is_empty() {
-                                e.2 = n.clone();
-                            }
-                        }
-                        e.3.push_str(&call.function.arguments);
+                "response.output_item.added" => {
+                    let item = &v["item"];
+                    if item["type"] == "function_call" {
+                        let item_id = item["id"].as_str().unwrap_or("").to_string();
+                        pending.push((
+                            item_id.clone(),
+                            PendingCall {
+                                call_id: item["call_id"].as_str().unwrap_or(&item_id).to_string(),
+                                name: item["name"].as_str().unwrap_or("").to_string(),
+                                args: item["arguments"].as_str().unwrap_or("").to_string(),
+                            },
+                        ));
                     }
                 }
+                "response.function_call_arguments.delta" => {
+                    let item_id = v["item_id"].as_str().unwrap_or("");
+                    if let Some(d) = v["delta"].as_str() {
+                        if let Some((_, call)) = pending.iter_mut().rev().find(|(id, _)| id == item_id) {
+                            call.args.push_str(d);
+                        } else if let Some((_, call)) = pending.last_mut() {
+                            call.args.push_str(d);
+                        }
+                    }
+                }
+                "response.output_item.done" => {
+                    // финальные аргументы вызова (перекрывают накопленные дельты)
+                    let item = &v["item"];
+                    if item["type"] == "function_call" {
+                        let item_id = item["id"].as_str().unwrap_or("").to_string();
+                        let call_id = item["call_id"].as_str().unwrap_or(&item_id).to_string();
+                        let name = item["name"].as_str().unwrap_or("").to_string();
+                        let args = item["arguments"].as_str().unwrap_or("").to_string();
+                        if let Some((_, call)) = pending.iter_mut().rev().find(|(id, _)| *id == item_id) {
+                            call.call_id = call_id;
+                            call.name = name;
+                            call.args = args;
+                        } else {
+                            pending.push((item_id, PendingCall { call_id, name, args }));
+                        }
+                    }
+                }
+                "response.completed" | "response.incomplete" => {
+                    let output = &v["response"]["output"];
+                    if let Some(items) = output.as_array() {
+                        let calls: Vec<serde_json::Value> = items
+                            .iter()
+                            .filter(|it| it["type"] == "function_call")
+                            .map(|it| {
+                                let item_id = it["id"].as_str().unwrap_or("");
+                                serde_json::json!({
+                                    "call_id": it["call_id"].as_str().unwrap_or(item_id),
+                                    "name": it["name"],
+                                    "arguments": it["arguments"].as_str().unwrap_or(""),
+                                })
+                            })
+                            .collect();
+                        final_calls = Some(calls);
+                    }
+                }
+                "response.failed" | "error" | "response.error" => {
+                    let msg = v["response"]["status_details"]["error"]["message"]
+                        .as_str()
+                        .or_else(|| v["response"]["error"]["message"].as_str())
+                        .or_else(|| v["message"].as_str())
+                        .or_else(|| v["error"]["message"].as_str())
+                        .unwrap_or("неизвестная ошибка провайдера");
+                    return Err(format!("Провайдер: {}", msg));
+                }
+                _ => {}
             }
         }
     }
 
-    let tool_calls = tc
-        .into_iter()
-        .filter(|(_, _, name, _)| !name.is_empty())
-        .map(|(i, id, name, args)| {
-            serde_json::json!({
-                "id": if id.is_empty() { format!("call_{}", i) } else { id },
-                "type": "function",
-                "function": { "name": name, "arguments": args },
-            })
+    let function_calls = final_calls
+        .unwrap_or_else(|| {
+            pending
+                .into_iter()
+                .filter(|(_, c)| !c.name.is_empty())
+                .map(|(_, c)| {
+                    serde_json::json!({
+                        "call_id": c.call_id,
+                        "name": c.name,
+                        "arguments": c.args,
+                    })
+                })
+                .collect()
         })
+        .into_iter()
+        .filter(|c| !c["name"].as_str().unwrap_or("").is_empty())
         .collect();
 
-    Ok((finish, StepResult { content, tool_calls }))
+    Ok(StepResult { content, function_calls })
 }
 
 #[tauri::command]
@@ -2271,23 +2310,63 @@ async fn chat_run(
     });
     save_chats(app, &chats)?;
 
-    // ---- цикл агента
-    let mut api_messages: Vec<serde_json::Value> = Vec::new();
-    api_messages.push(serde_json::json!({ "role": "system", "content": build_system_prompt(app, model) }));
-    api_messages.extend(history);
-    api_messages.push(serde_json::json!({ "role": "user", "content": message }));
+    // ---- цикл агента (Responses API: instructions + input-элементы)
+    let instructions = build_system_prompt(app, model);
+    let to_user_item = |text: &str| -> serde_json::Value {
+        serde_json::json!({
+            "role": "user",
+            "content": [{ "type": "input_text", "text": text }],
+        })
+    };
+    let to_assistant_item = |text: &str| -> serde_json::Value {
+        serde_json::json!({
+            "role": "assistant",
+            "content": [{ "type": "output_text", "text": text }],
+        })
+    };
+    let mut input: Vec<serde_json::Value> = Vec::new();
+    // history — только user/assistant с непустым текстом, в хронологическом порядке
+    for m in &history {
+        let role = m["role"].as_str().unwrap_or("");
+        let text = m["content"].as_str().unwrap_or("");
+        if text.trim().is_empty() {
+            continue;
+        }
+        input.push(if role == "assistant" { to_assistant_item(text) } else { to_user_item(text) });
+    }
+    input.push(to_user_item(message));
 
     // набор инструментов зависит от режима:
     //   chat — только поиск в сети; confirm/full — плюс действия в приложении
-    let mut tools: serde_json::Value =
-        serde_json::from_str(TOOLS_JSON).unwrap_or(json!([]));
+    // объявления инструментов в TOOLS_JSON даны во вложенном формате
+    // chat/completions; приводим к плоскому формату Responses API
+    // ({type, name, description, parameters})
+    let collect_tools = |src: &str| -> Vec<serde_json::Value> {
+        serde_json::from_str::<serde_json::Value>(src)
+            .unwrap_or(json!([]))
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|t| {
+                // из вложенного формата chat/completions в плоский Responses
+                match t.get("function").cloned() {
+                    Some(f) => json!({
+                        "type": "function",
+                        "name": f["name"],
+                        "description": f["description"],
+                        "parameters": f["parameters"],
+                    }),
+                    None => t,
+                }
+            })
+            .collect()
+    };
+    let mut tools = collect_tools(TOOLS_JSON);
     if mode == "confirm" || mode == "full" {
-        let app_tools: serde_json::Value =
-            serde_json::from_str(APP_TOOLS_JSON).unwrap_or(json!([]));
-        for t in app_tools.as_array().unwrap_or(&vec![]) {
-            tools.as_array_mut().unwrap().push(t.clone());
-        }
+        tools.extend(collect_tools(APP_TOOLS_JSON));
     }
+    let tools = json!(tools);
 
     let mut final_answer = String::new();
 
@@ -2324,7 +2403,8 @@ async fn chat_run(
                 base,
                 api_key,
                 model,
-                &api_messages,
+                &instructions,
+                &input,
                 &tools,
                 cancelled,
                 &|c| {
@@ -2340,23 +2420,18 @@ async fn chat_run(
         };
 
         let result = match step {
-            Ok((_, r)) => r,
+            Ok(r) => r,
             Err(e) => break Err(e),
         };
 
-        if !result.tool_calls.is_empty() {
-            // эхо-сообщение ассистента с tool_calls
-            api_messages.push(serde_json::json!({
-                "role": "assistant",
-                "content": result.content,
-                "tool_calls": result.tool_calls,
-            }));
-
-            for call in &result.tool_calls {
-                let name = call["function"]["name"].as_str().unwrap_or("?").to_string();
-                let args_s = call["function"]["arguments"].as_str().unwrap_or("{}").to_string();
+        if !result.function_calls.is_empty() {
+            // текст перед вызовами инструментов уже отдан дельтами; в input
+            // ничего не добавляем — ответы уходят как function_call_output
+            for call in &result.function_calls {
+                let name = call["name"].as_str().unwrap_or("?").to_string();
+                let args_s = call["arguments"].as_str().unwrap_or("{}").to_string();
                 let args: serde_json::Value = serde_json::from_str(&args_s).unwrap_or(json!({}));
-                let call_id = call["id"].as_str().unwrap_or("call").to_string();
+                let call_id = call["call_id"].as_str().unwrap_or("call").to_string();
 
                 // подтверждение действия в режиме confirm
                 let mut approved = mode != "confirm" || !is_app_action(&name);
@@ -2399,10 +2474,10 @@ async fn chat_run(
                 }
 
                 if !approved {
-                    api_messages.push(serde_json::json!({
-                        "role": "tool",
-                        "tool_call_id": call_id,
-                        "content": "Пользователь отклонил это действие. Не повторяй его без явной просьбы.",
+                    input.push(serde_json::json!({
+                        "type": "function_call_output",
+                        "call_id": call_id,
+                        "output": "Пользователь отклонил это действие. Не повторяй его без явной просьбы.",
                     }));
                     parts_log.lock().expect("mutex").push(json!({
                         "kind": "tool", "name": name, "args": args,
@@ -2457,10 +2532,10 @@ async fn chat_run(
                         "result": preview,
                     });
                 }
-                api_messages.push(serde_json::json!({
-                    "role": "tool",
-                    "tool_call_id": call_id,
-                    "content": output,
+                input.push(serde_json::json!({
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": output,
                 }));
             }
             continue;
