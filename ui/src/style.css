@@ -1276,3 +1276,619 @@ html[data-theme="dark"] .hljs-title.function_, html[data-theme="dark"] .hljs-bui
   font-size: 11px;
   white-space: nowrap;
 }
+
+/* ============ вкладка «Вакансии» ============ */
+/* вкладка занимает весь экран, колонки листаются независимо */
+main.vac-page {
+  padding: 0;
+  max-width: none;
+  height: calc(100vh - 61px);
+  overflow: hidden;
+}
+
+.vac-layout {
+  max-width: 1180px;
+  margin: 0 auto;
+  width: 100%;
+  height: 100%;
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  gap: 18px;
+  padding: 18px 24px;
+  box-sizing: border-box;
+  align-items: stretch;
+  min-height: 0;
+}
+
+/* ---- боковая панель фильтров: листается сама ---- */
+.vac-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+  min-height: 0;
+  padding-bottom: 4px;
+}
+.vac-sidebar::-webkit-scrollbar { width: 8px; }
+.vac-sidebar::-webkit-scrollbar-thumb { border: 2px solid transparent; background-clip: content-box; }
+.vac-field {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+  margin: 0 0 12px;
+}
+.vac-field:last-of-type { margin-bottom: 0; }
+.vac-field input,
+.vac-field .ms-root .ms-btn {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 5px;
+  font-size: 13.5px;
+  padding: 8px 11px;
+  border-radius: 8px;
+}
+.vac-field .ms-root .ms-btn {
+  background: var(--surface);
+  text-align: left;
+}
+.vac-field .ms-menu { max-height: 260px; overflow-y: auto; }
+.vac-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 14px 0 0;
+  font-size: 13px;
+  color: var(--text);
+}
+.vac-check input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent);
+}
+.vac-apply-btn { width: 100%; margin-top: 16px; border-radius: 9px; }
+
+.vac-trackings-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.tracking-chip {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  overflow: hidden;
+  max-width: 100%;
+  transition: border-color .15s;
+}
+.tracking-chip:hover { border-color: var(--border-strong); }
+.tracking-chip.active { border-color: var(--accent); }
+.tracking-chip .tracking-open {
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  padding: 6px 4px 6px 12px;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tracking-chip.active .tracking-open { color: var(--accent); }
+.tracking-chip .tracking-del {
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1;
+  padding: 5px 9px 5px 4px;
+  cursor: pointer;
+}
+.tracking-chip .tracking-del:hover { color: var(--danger); }
+.tracking-chip .tracking-edit {
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+  padding: 5px 2px 5px 4px;
+  cursor: pointer;
+}
+.tracking-chip .tracking-edit:hover { color: var(--accent); }
+.tracking-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+.tracking-buttons .ghost-btn { width: 100%; }
+.tracking-save input {
+  width: 100%;
+  font-size: 13.5px;
+  padding: 8px 11px;
+  border-radius: 8px;
+}
+.tracking-save .row { margin-top: 8px; }
+
+/* ---- результаты: листаются отдельно от фильтров ---- */
+.vac-results {
+  padding: 20px 24px 16px;
+  min-width: 0;
+  overflow-y: auto;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  box-sizing: border-box;
+}
+.vac-results-head { min-height: 32px; }
+.vac-results-head h2 { margin: 0 0 4px; }
+
+.vac-empty { color: var(--muted); font-size: 14px; padding: 18px 0 10px; }
+.status.err { margin-top: 8px; }
+
+.vac-item {
+  padding: 15px 2px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  transition: background .12s;
+}
+.vac-item:last-of-type { border-bottom: none; }
+.vac-item:hover { background: var(--surface-2); }
+.vac-item-row { display: flex; gap: 16px; align-items: flex-start; }
+.vac-item-main { flex: 1; min-width: 0; }
+.vac-title { font-weight: 600; font-size: 15px; color: var(--text); line-height: 1.35; }
+.vac-item:hover .vac-title { color: var(--accent); }
+.vac-meta { color: var(--muted); font-size: 12.5px; margin-top: 3px; }
+.vac-snippet {
+  color: var(--muted);
+  font-size: 13px;
+  margin-top: 6px;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.vac-item-side {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  text-align: right;
+  gap: 6px;
+}
+.vac-salary { font-weight: 700; font-size: 14px; white-space: nowrap; }
+.vac-published { color: var(--muted); font-size: 11.5px; }
+.vac-actions { display: flex; gap: 8px; }
+.vac-actions .ghost-btn.active { border-color: var(--accent); color: var(--accent); }
+
+.vac-detail {
+  margin: 12px 0 6px;
+  padding: 14px 16px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: default;
+}
+.vac-detail-loading { color: var(--muted); font-size: 13px; margin: 0; }
+.vac-skills { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.vac-skill {
+  font-size: 11.5px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+.vac-description {
+  font-size: 13.5px;
+  line-height: 1.55;
+  white-space: pre-line;
+  color: var(--text);
+}
+
+/* ---- пагинация ---- */
+.vac-pagination {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 4px;
+  padding-top: 16px;
+}
+.vac-page-btn {
+  min-width: 32px;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  font: inherit;
+  font-size: 13.5px;
+  color: var(--text);
+  cursor: pointer;
+  transition: background .12s, border-color .12s;
+}
+.vac-page-btn:hover:not(:disabled):not(.current) { background: var(--surface-2); border-color: var(--border); }
+.vac-page-btn.current { background: var(--accent); color: #fff; font-weight: 600; }
+.vac-page-btn:disabled { color: var(--muted); cursor: default; opacity: 0.6; }
+.vac-page-dots { color: var(--muted); padding: 0 2px; }
+
+/* ---- скелетоны загрузки ---- */
+.vac-skeletons { display: flex; flex-direction: column; gap: 14px; padding: 10px 0; }
+.vac-skeleton {
+  height: 58px;
+  border-radius: 10px;
+  background: linear-gradient(90deg, var(--surface-2) 25%, var(--border) 50%, var(--surface-2) 75%);
+  background-size: 200% 100%;
+  animation: vac-shimmer 1.3s infinite;
+}
+@keyframes vac-shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+
+@media (max-width: 900px) {
+  .vac-layout { grid-template-columns: 1fr; overflow-y: auto; }
+  .vac-sidebar { overflow: visible; }
+  .vac-results { overflow: visible; }
+  .vac-item-side { display: none; }
+  .vac-item-row { gap: 0; }
+}
+
+/* группы фильтров в сайдбаре */
+.vac-labels { margin: 14px 0 4px; }
+.vac-group-title {
+  display: block;
+  font-size: 11.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+.vac-labels .vac-check { margin: 0 0 8px; }
+
+/* ---------------------------------------------------------------- вкладка «Чаты» (переписки с работодателями hh.ru) */
+
+.hhch-page {
+  padding: 0;
+  max-width: none;
+  height: calc(100vh - 61px);
+  overflow: hidden;
+}
+
+.hhch-layout {
+  max-width: 1180px;
+  margin: 0 auto;
+  width: 100%;
+  height: 100%;
+  display: grid;
+  grid-template-columns: 340px minmax(0, 1fr);
+  gap: 18px;
+  padding: 18px 24px;
+  box-sizing: border-box;
+  align-items: stretch;
+  min-height: 0;
+}
+
+/* ---- список чатов ---- */
+.hhch-list {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  padding: 14px;
+  box-sizing: border-box;
+}
+.hhch-list-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.hhch-list-head h2 {
+  margin: 0;
+  font-size: 16px;
+}
+.hhch-unread-all {
+  background: var(--accent);
+  color: #fff;
+  font-size: 11.5px;
+  font-weight: 700;
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+.hhch-unread-all-btn {
+  color: var(--accent);
+  border: none;
+  background: none;
+  font-size: 12.5px;
+  padding: 2px 0;
+  cursor: pointer;
+}
+.hhch-unread-all-btn:hover { text-decoration: underline; }
+.hhch-search {
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 13.5px;
+  padding: 8px 11px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  margin-bottom: 8px;
+}
+.hhch-unread-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  color: var(--muted);
+  margin-bottom: 10px;
+  cursor: pointer;
+}
+.hhch-items {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0 -8px;
+  padding: 0 8px;
+}
+.hhch-item {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: 10px;
+  padding: 10px 8px;
+  cursor: pointer;
+  color: var(--text);
+  font: inherit;
+}
+.hhch-item:hover { background: var(--surface-2); }
+.hhch-item.active {
+  background: var(--surface-2);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.hhch-avatar {
+  flex: none;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--muted);
+}
+.hhch-avatar.unread { color: var(--accent); border-color: var(--accent); }
+.hhch-item-main { flex: 1; min-width: 0; }
+.hhch-item-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: baseline;
+}
+.hhch-item-title {
+  font-weight: 600;
+  font-size: 13.5px;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hhch-item.active .hhch-item-title { color: var(--accent); }
+.hhch-item-time { flex: none; color: var(--muted); font-size: 11px; }
+.hhch-item-bottom {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+  margin-top: 2px;
+}
+.hhch-item-preview {
+  color: var(--muted);
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hhch-badge {
+  flex: none;
+  min-width: 18px;
+  text-align: center;
+  background: var(--accent);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  border-radius: 999px;
+  padding: 1px 6px;
+}
+
+/* ---- переписка ---- */
+.hhch-convo {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  box-sizing: border-box;
+  overflow: hidden;
+}
+.hhch-convo-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.hhch-convo-title {
+  font-weight: 600;
+  font-size: 14.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hhch-vac-link { flex: none; }
+.hhch-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.hhch-day {
+  align-self: center;
+  font-size: 11.5px;
+  color: var(--muted);
+  background: var(--surface-2);
+  border-radius: 999px;
+  padding: 3px 12px;
+  margin: 6px 0;
+}
+.hhch-msg-wrap { display: flex; flex-direction: column; }
+.hhch-msg {
+  max-width: 72%;
+  align-self: flex-start;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  border-bottom-left-radius: 4px;
+  padding: 8px 12px;
+}
+.hhch-msg.mine {
+  align-self: flex-end;
+  background: var(--bg);
+  border-bottom-left-radius: 12px;
+  border-bottom-right-radius: 4px;
+}
+.hhch-msg-head {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 2px;
+}
+.hhch-role { color: var(--muted); font-weight: 500; }
+.hhch-msg-text {
+  font-size: 13.5px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+.hhch-msg-meta {
+  font-size: 10.5px;
+  color: var(--muted);
+  text-align: right;
+  margin-top: 3px;
+}
+.hhch-file {
+  display: inline-block;
+  font-size: 12.5px;
+  color: var(--accent);
+  text-decoration: underline;
+  margin-top: 4px;
+}
+.hhch-older { align-self: center; margin: 2px 0 6px; }
+.hhch-placeholder {
+  margin: auto;
+  color: var(--muted);
+  font-size: 14px;
+  text-align: center;
+  max-width: 380px;
+  padding: 0 20px;
+}
+.hhch-note { color: var(--muted); font-size: 13px; padding: 8px 4px; }
+.hhch-error { color: var(--accent); font-size: 12.5px; padding: 6px 4px; }
+.hhch-error-pane { padding: 4px 16px; margin: 0; }
+
+/* ---- поле ввода ---- */
+.hhch-compose {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+}
+.hhch-input {
+  flex: 1;
+  resize: none;
+  font: inherit;
+  font-size: 13.5px;
+  line-height: 1.4;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  max-height: 140px;
+  box-sizing: border-box;
+}
+.hhch-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.hhch-send { flex: none; border-radius: 10px; }
+.hhch-blocked {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  padding: 4px 0;
+}
+
+/* чекбокс «Только непрочитанные»: глобальный input тянется на всю ширину */
+.hhch-unread-toggle input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+/* строка «вакансия · статус» в списке чатов и в шапке переписки */
+.hhch-item-sub {
+  display: block;
+  color: var(--text);
+  font-size: 12px;
+  opacity: 0.85;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 1px;
+}
+.hhch-convo-titlebox { min-width: 0; }
+.hhch-convo-sub {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* выпадающие списки в сайдбаре «Вакансий»: не шире панели,
+   длинные названия переносятся, а не обрезаются краем */
+.vac-sidebar .ms-menu {
+  width: 100%;
+  min-width: 0;
+  max-height: 280px;
+}
+.vac-sidebar .ms-item { white-space: normal; }
+.vac-sidebar .ms-item .ms-item-label {
+  white-space: normal;
+  line-height: 1.35;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}

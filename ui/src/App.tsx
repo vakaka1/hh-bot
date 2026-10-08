@@ -5,9 +5,11 @@ import ModelSelect from "./ModelSelect";
 import type { ModelEntry } from "./api";
 import { loadAllModels } from "./api";
 import Chat from "./Chat";
+import Vacancies from "./Vacancies";
+import Chats from "./Chats";
 
 type Screen = "loading" | "login" | "app";
-type Tab = "chat" | "profile" | "settings";
+type Tab = "chat" | "vacancies" | "hhchats" | "profile" | "settings";
 
 type ThemeSetting = "system" | "light" | "dark";
 
@@ -252,6 +254,19 @@ function Profile() {
     }
   }
 
+  async function createResume() {
+    setResAction(null);
+    try {
+      await api.openResumeCreator();
+      setResAction({
+        text: "Открыл форму создания резюме на hh.ru. Попросите агента в чате подготовить тексты из знаний о вас — их можно вставить в форму.",
+        ok: true,
+      });
+    } catch (e) {
+      setResAction({ text: String(e), ok: false });
+    }
+  }
+
   const fullName = me
     ? [me.last_name, me.first_name, me.middle_name].filter(Boolean).join(" ")
     : "";
@@ -353,9 +368,14 @@ function Profile() {
       <div className="card">
         <div className="card-head">
           <h2>Мои резюме</h2>
-          <button className="ghost-btn small" onClick={loadResumes}>
-            Обновить
-          </button>
+          <div className="row gap">
+            <button className="btn-primary small" onClick={createResume} title="Открыть форму создания резюме на hh.ru">
+              Создать резюме
+            </button>
+            <button className="ghost-btn small" onClick={loadResumes}>
+              Обновить
+            </button>
+          </div>
         </div>
         {resErr && <p className="status err">{resErr}</p>}
         {!resumes && !resErr && <p className="hint">Загрузка…</p>}
@@ -966,6 +986,12 @@ export default function App() {
           <button className={"tab-btn" + (tab === "chat" ? " active" : "")} onClick={() => setTab("chat")}>
             Чат
           </button>
+          <button className={"tab-btn" + (tab === "vacancies" ? " active" : "")} onClick={() => setTab("vacancies")}>
+            Вакансии
+          </button>
+          <button className={"tab-btn" + (tab === "hhchats" ? " active" : "")} onClick={() => setTab("hhchats")}>
+            Чаты
+          </button>
           <button className={"tab-btn" + (tab === "profile" ? " active" : "")} onClick={() => setTab("profile")}>
             Профиль
           </button>
@@ -980,7 +1006,7 @@ export default function App() {
         </div>
       </header>
 
-      <main className={tab === "chat" ? "chat-page" : ""}>
+      <main className={tab === "chat" ? "chat-page" : tab === "vacancies" ? "vac-page" : tab === "hhchats" ? "hhch-page" : ""}>
         <div style={{ display: tab === "chat" ? "contents" : "none" }}>
           <Chat
             store={store}
@@ -990,6 +1016,8 @@ export default function App() {
             onNavigate={setTab}
           />
         </div>
+        {tab === "vacancies" && <Vacancies />}
+        {tab === "hhchats" && <Chats />}
         {tab === "profile" && <Profile />}
         {tab === "settings" &&
           (providersOpen ? (

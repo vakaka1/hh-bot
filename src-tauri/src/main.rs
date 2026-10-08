@@ -498,6 +498,43 @@ async fn open_resume_editor(app: tauri::AppHandle, resume_id: String) -> Result<
     Ok(())
 }
 
+// Создание нового резюме: api.hh.ru резюме не создаёт, форма есть только
+// на сайте — открываем видимое окно с пустой формой создания; сессия
+// общая с приложением, тексты для вставки агент готовит в чате.
+#[tauri::command]
+async fn open_resume_creator(app: tauri::AppHandle) -> Result<(), String> {
+    let url: tauri::Url = "https://hh.ru/applicant/resumes/form"
+        .parse()
+        .map_err(|_| "Некорректный адрес формы резюме".to_string())?;
+    if let Some(w) = app.get_webview_window("resumeweb") {
+        let _ = w.close();
+    }
+    tauri::WebviewWindowBuilder::new(&app, "resumeweb", tauri::WebviewUrl::External(url))
+        .title("Создание резюме — hh.ru")
+        .inner_size(1100.0, 900.0)
+        .build()
+        .map_err(|e| format!("Не удалось открыть окно hh.ru: {}", e))?;
+    Ok(())
+}
+
+// Открыть страницу hh.ru (вакансию) в окне приложения; сессия общая.
+#[tauri::command]
+async fn open_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    let u: tauri::Url = url.trim().parse().map_err(|_| "Некорректный адрес".to_string())?;
+    if u.scheme() != "https" || u.host_str().map(|h| !h.ends_with("hh.ru")).unwrap_or(true) {
+        return Err("Открывать можно только страницы hh.ru".into());
+    }
+    if let Some(w) = app.get_webview_window("resumeweb") {
+        let _ = w.close();
+    }
+    tauri::WebviewWindowBuilder::new(&app, "resumeweb", tauri::WebviewUrl::External(u))
+        .title("hh.ru")
+        .inner_size(1100.0, 900.0)
+        .build()
+        .map_err(|e| format!("Не удалось открыть окно hh.ru: {}", e))?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------- профиль пользователя (локальное хранилище)
 
 fn profile_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -1267,7 +1304,7 @@ const TOOLS_JSON: &str = r#"[
     "type": "function",
     "function": {
       "name": "search_vacancies",
-      "description": "Поиск вакансий на hh.ru. Возвращает список: название, зарплата, работодатель, регион, ссылка. Требует входа в hh.ru."
+      "description": "Поиск вакансий на hh.ru. Возвращает список: название, зарплата, работодатель, регион, ссылка. Требует входа в hh.ru.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -1279,10 +1316,21 @@ const TOOLS_JSON: &str = r#"[
           "salary": { "type": "integer", "description": "Минимальная зарплата" },
           "only_with_salary": { "type": "boolean", "description": "Только вакансии с указанной зарплатой" },
           "search_field": { "type": "string", "enum": ["name", "company_name", "description"], "description": "Где искать: в названии, по компании или по описанию" },
+          "professional_role": { "type": "string", "description": "Профобласть/роль — id из справочника hh.ru (например, 156 для разработки)" },
+          "order_by": { "type": "string", "enum": ["publication_time", "salary_desc", "relevance"], "description": "Сортировка: сначала свежие, по зарплате или по релевантности" },
+          "search_period": { "type": "integer", "description": "Размещено не позже, чем N дней назад (1, 3, 7, 30)" },
           "per_page": { "type": "integer", "description": "Результатов на страницу (по умолчанию 10, максимум 50)" },
           "page": { "type": "integer", "description": "Номер страницы с нуля" }
         }
       }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "list_trackings",
+      "description": "Показать сохранённые отслеживания вакансий: имя и настроенные фильтры каждого. Отслеживания видны и на вкладке «Вакансии». Только чтение.",
+      "parameters": { "type": "object", "properties": {} }
     }
   },
   {
@@ -1396,6 +1444,104 @@ const APP_TOOLS_JSON: &str = r#"[
         "required": ["resume_id"]
       }
     }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "create_tracking",
+      "description": "Сохранить отслеживание вакансий — набор фильтров поиска с понятным именем (например, «Frontend, удалёнка, от 300к»). Отслеживание появится на вкладке «Вакансии», пользователь сможет открывать его одним нажатием. Фильтры те же, что у search_vacancies.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "description": "Короткое понятное имя отслеживания" },
+          "params": {
+            "type": "object",
+            "description": "Фильтры поиска (как у search_vacancies): text, area, experience, employment, schedule, salary, only_with_salary, search_field",
+            "properties": {
+              "text": { "type": "string" },
+              "area": { "type": "string" },
+              "experience": { "type": "string", "enum": ["no_experience", "between1And3", "between3And6", "moreThan6"] },
+              "employment": { "type": "string", "enum": ["full", "part", "project", "internship"] },
+              "schedule": { "type": "string", "enum": ["full_day", "flexible", "remote", "hybrid", "shift", "fly_in_fly_out"] },
+              "salary": { "type": "integer" },
+              "only_with_salary": { "type": "boolean" },
+              "search_field": { "type": "string", "enum": ["name", "company_name", "description"] }
+            }
+          }
+        },
+        "required": ["name", "params"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "update_tracking",
+      "description": "Изменить существующее отслеживание вакансий: заменить имя и/или фильтры. id — из list_trackings. Ничего не передал кроме tracking_id — ошибка.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "tracking_id": { "type": "string" },
+          "name": { "type": "string", "description": "Новое имя (необязательно)" },
+          "params": {
+            "type": "object",
+            "description": "Новые фильтры целиком (как у create_tracking): text, area, experience, employment, schedule, salary, only_with_salary, search_field"
+          }
+        },
+        "required": ["tracking_id"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "delete_tracking",
+      "description": "Удалить отслеживание вакансий по id (id можно получить через list_trackings).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "tracking_id": { "type": "string" }
+        },
+        "required": ["tracking_id"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "list_chats",
+      "description": "Список переписок с работодателями (чаты на вкладке «Чаты»): работодатель, вакансия, статус отклика, число непрочитанных. Дальше сообщения можно читать через read_chat и писать через send_chat_message.",
+      "parameters": { "type": "object", "properties": {} }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "read_chat",
+      "description": "Прочитать сообщения переписки с работодателем по id переписки (id из list_chats). Возвращает сообщения в хронологическом порядке.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "chat_id": { "type": "string", "description": "id переписки из list_chats" }
+        },
+        "required": ["chat_id"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "send_chat_message",
+      "description": "Отправить сообщение работодателю в переписку по id переписки (id из list_chats). Пиши от лица пользователя, кратко и вежливо; перед отправкой важного сообщения покажи текст пользователю.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "chat_id": { "type": "string", "description": "id переписки из list_chats" },
+          "message": { "type": "string", "description": "Текст сообщения" }
+        },
+        "required": ["chat_id", "message"]
+      }
+    }
   }
 ]"#;
 
@@ -1404,6 +1550,7 @@ fn is_app_action(name: &str) -> bool {
     matches!(
         name,
         "set_theme" | "navigate" | "update_profile" | "unpublish_resume" | "publish_resume" | "edit_resume"
+        | "create_tracking" | "update_tracking" | "delete_tracking" | "send_chat_message"
     )
 }
 
@@ -1468,14 +1615,21 @@ async fn tool_edit_resume(app: &tauri::AppHandle, args: &serde_json::Value) -> R
     Ok("Открыл окно редактирования резюме на hh.ru.".into())
 }
 
-// ---------------------------------------------------------------- новые hh-инструменты
+// ---------------------------------------------------------------- вакансии и отслеживания
 
-async fn tool_search_vacancies(app: &tauri::AppHandle, args: &serde_json::Value) -> Result<String, String> {
+// Сборка query string для /vacancies из произвольного объекта параметров —
+// общий для инструмента агента и команды вкладки «Вакансии».
+fn build_vacancy_query(args: &serde_json::Value) -> String {
     let mut params: Vec<(String, String)> = vec![
-        ("per_page".into(), args["per_page"].as_u64().unwrap_or(10).clamp(1, 50).to_string()),
+        ("per_page".into(), args["per_page"].as_u64().unwrap_or(20).clamp(1, 50).to_string()),
         ("page".into(), args["page"].as_u64().unwrap_or(0).to_string()),
     ];
-    for key in ["text", "area", "experience", "employment", "schedule", "search_field"] {
+    for key in [
+        "text", "area", "professional_role", "industry", "experience", "employment",
+        "employment_form", "schedule", "search_field", "work_format", "working_hours",
+        "working_time_modes", "label", "education", "driver_license_types",
+        "salary_frequency", "excluded_text",
+    ] {
         let v = &args[key];
         let vals: Vec<String> = match v {
             serde_json::Value::String(s) if !s.trim().is_empty() => vec![s.trim().to_string()],
@@ -1492,7 +1646,13 @@ async fn tool_search_vacancies(app: &tauri::AppHandle, args: &serde_json::Value)
     if args["only_with_salary"].as_bool().unwrap_or(false) {
         params.push(("only_with_salary".into(), "true".into()));
     }
-    let query: String = params
+    if let Some(s) = args["search_period"].as_u64() {
+        params.push(("search_period".into(), s.to_string()));
+    }
+    if let Some(s) = args["order_by"].as_str().filter(|s| !s.is_empty()) {
+        params.push(("order_by".into(), s.to_string()));
+    }
+    params
         .iter()
         .map(|(k, v)| {
             let enc = v.bytes().map(|b| match b {
@@ -1503,9 +1663,490 @@ async fn tool_search_vacancies(app: &tauri::AppHandle, args: &serde_json::Value)
             format!("{}={}", k, enc)
         })
         .collect::<Vec<_>>()
-        .join("&");
+        .join("&")
+}
 
-    let data = hh_get(app, &format!("/vacancies?{}", query)).await?;
+// хранилище отслеживаний: { items: [ { id, name, created_at, params } ] }
+fn trackings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(data_dir(app)?.join("trackings.json"))
+}
+
+fn trackings_items(app: &tauri::AppHandle) -> Vec<serde_json::Value> {
+    read_json::<serde_json::Value>(trackings_path(app).unwrap_or_default())
+        .map(|v| v["items"].as_array().cloned().unwrap_or_default())
+        .unwrap_or_default()
+}
+
+fn trackings_write(app: &tauri::AppHandle, items: &[serde_json::Value]) -> Result<(), String> {
+    write_json(trackings_path(app)?, &json!({ "items": items }))
+}
+
+// человекочитаемое описание фильтров — для ответов агенту
+fn tracking_params_brief(p: &serde_json::Value) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for (k, label) in [
+        ("text", "текст"),
+        ("area", "регион"),
+        ("experience", "опыт"),
+        ("employment", "занятость"),
+        ("schedule", "график"),
+        ("search_field", "где искать"),
+    ] {
+        if let Some(s) = p[k].as_str().filter(|s| !s.trim().is_empty()) {
+            parts.push(format!("{}: {}", label, s));
+        }
+    }
+    if let Some(s) = p["salary"].as_u64() {
+        parts.push(format!("зарплата от {}", s));
+    }
+    if p["only_with_salary"].as_bool().unwrap_or(false) {
+        parts.push("только с зарплатой".into());
+    }
+    if parts.is_empty() {
+        "без фильтров (все вакансии)".into()
+    } else {
+        parts.join(", ")
+    }
+}
+
+async fn tool_list_trackings(app: &tauri::AppHandle) -> Result<String, String> {
+    let items = trackings_items(app);
+    if items.is_empty() {
+        return Ok("Отслеживаний пока нет. Можно создать через create_tracking.".into());
+    }
+    let lines: Vec<String> = items
+        .iter()
+        .map(|t| {
+            format!(
+                "- id: {} | «{}» | фильтры: {}",
+                t["id"].as_str().unwrap_or("?"),
+                t["name"].as_str().unwrap_or("?"),
+                tracking_params_brief(&t["params"]),
+            )
+        })
+        .collect();
+    Ok(format!("Сохранённые отслеживания вакансий:\n\n{}", lines.join("\n")))
+}
+
+async fn tool_create_tracking(app: &tauri::AppHandle, args: &serde_json::Value) -> Result<String, String> {
+    let name = args["name"]
+        .as_str()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .ok_or("нет параметра name")?
+        .to_string();
+    let empty = serde_json::Map::new();
+    let params = args["params"].as_object().unwrap_or(&empty).clone();
+    if params.is_empty() {
+        return Err("Отслеживание без фильтров бесполезно — передай params (например, text и schedule)".into());
+    }
+    let items = trackings_items(app);
+    if items.iter().any(|t| t["name"].as_str() == Some(&name)) {
+        return Err(format!("Отслеживание «{}» уже есть — выбери другое имя или удали старое через delete_tracking", name));
+    }
+    let id = format!("tr-{}", now_ms());
+    let tracking = json!({ "id": id, "name": name, "created_at": now(), "params": params });
+    let mut next = items.clone();
+    next.push(tracking);
+    trackings_write(app, &next)?;
+    Ok(format!(
+        "Отслеживание «{}» сохранено (id: {}), фильтры: {}. Оно появилось на вкладке «Вакансии».",
+        name,
+        id,
+        tracking_params_brief(&json!(params))
+    ))
+}
+
+async fn tool_update_tracking(app: &tauri::AppHandle, args: &serde_json::Value) -> Result<String, String> {
+    let id = args["tracking_id"]
+        .as_str()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .ok_or("нет параметра tracking_id")?;
+    let new_name = args["name"].as_str().map(|s| s.trim()).filter(|s| !s.is_empty());
+    let new_params = args["params"].as_object().filter(|p| !p.is_empty());
+    if new_name.is_none() && new_params.is_none() {
+        return Err("нечего менять — передай name и/или params".into());
+    }
+    let items = trackings_items(app);
+    let mut next = items.clone();
+    let mut changed = false;
+    for t in next.iter_mut() {
+        if t["id"].as_str() == Some(id) {
+            if let Some(n) = new_name {
+                t["name"] = json!(n);
+            }
+            if let Some(p) = new_params {
+                t["params"] = json!(p);
+            }
+            changed = true;
+            break;
+        }
+    }
+    if !changed {
+        return Err(format!("Отслеживание с id {} не найдено — посмотри список через list_trackings", id));
+    }
+    trackings_write(app, &next)?;
+    let name = new_name.map(|s| s.to_string());
+    Ok(format!(
+        "Отслеживание обновлено (id: {}). {}",
+        id,
+        new_params
+            .map(|p| format!("Новые фильтры: {}.", tracking_params_brief(&json!(p))))
+            .or_else(|| name.map(|n| format!("Новое имя: «{}».", n)))
+            .unwrap_or_default()
+    ))
+}
+
+async fn tool_delete_tracking(app: &tauri::AppHandle, args: &serde_json::Value) -> Result<String, String> {
+    let id = args["tracking_id"]
+        .as_str()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .ok_or("нет параметра tracking_id")?;
+    let items = trackings_items(app);
+    let name = items
+        .iter()
+        .find(|t| t["id"].as_str() == Some(id))
+        .map(|t| t["name"].as_str().unwrap_or("").to_string());
+    let next: Vec<serde_json::Value> = items
+        .into_iter()
+        .filter(|t| t["id"].as_str() != Some(id))
+        .collect();
+    if next.len() == trackings_items(app).len() {
+        return Err(format!("Отслеживание с id {} не найдено — посмотри список через list_trackings", id));
+    }
+    trackings_write(app, &next)?;
+    Ok(format!(
+        "Отслеживание «{}» удалено.",
+        name.unwrap_or_else(|| id.to_string())
+    ))
+}
+
+// поиск вакансий для вкладки: возвращает ответ hh.ru как есть
+#[tauri::command]
+async fn search_vacancies(
+    app: tauri::AppHandle,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    let query = build_vacancy_query(&params.unwrap_or(json!({})));
+    hh_get(&app, &format!("/vacancies?{}", query)).await
+}
+
+// одна вакансия целиком — для просмотра деталей на вкладке
+#[tauri::command]
+async fn get_vacancy(app: tauri::AppHandle, id: String) -> Result<serde_json::Value, String> {
+    let id = id.trim();
+    if id.is_empty() || id.contains('/') {
+        return Err("Некорректный id вакансии".into());
+    }
+    hh_get(&app, &format!("/vacancies/{}", id)).await
+}
+
+// POST к api.hh.ru с OAuth-токеном и form-телом (отправка сообщений в
+// переписках: старый API принимает application/x-www-form-urlencoded)
+async fn hh_post_form(
+    app: &tauri::AppHandle,
+    path: &str,
+    form: &[(&str, &str)],
+) -> Result<serde_json::Value, String> {
+    let tokens = valid_token(app).await?;
+    let resp = http_client()
+        .post(format!("{}{}", HH_API_BASE, path))
+        .bearer_auth(&tokens.access_token)
+        .form(form)
+        .send()
+        .await
+        .map_err(|e| format!("Сетевая ошибка: {}", e))?;
+    let status = resp.status();
+    let text = resp.text().await.map_err(|e| e.to_string())?;
+    if !status.is_success() {
+        let body: serde_json::Value = serde_json::from_str(&text).unwrap_or(json!({}));
+        let desc = body["description"].as_str().unwrap_or("неизвестная ошибка");
+        return Err(format!("hh.ru API {}: {}", status, desc));
+    }
+    // при успехе hh.ru может вернуть JSON или html — содержимое не важно
+    Ok(serde_json::from_str(&text).unwrap_or(json!({})))
+}
+
+// ---------------------------------------------------------------- чаты с работодателями (переписки hh.ru, /negotiations)
+//
+// Новый Chats API (/common/chats) требует scope, которого нет у токена
+// мобильного клиента hh.ru (403), поэтому используем стабильный API
+// переписок: GET /negotiations и GET/POST /negotiations/{id}/messages.
+
+// Счётчик непрочитанных из /negotiations не сбрасывается, когда пользователь
+// читает переписку (ни на сайте, ни через этот API — «отметить прочитанным»
+// умеет только /common/chats, недоступный с нашим токеном). Поэтому факт
+// прочтения храним локально: когда чат открыт в приложении (или пользователь
+// нажал «Прочитать все»), всё пришедшее до этого момента считается
+// прочитанным; новое сообщение (updated_at позже отметки) снова показывается.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct HhReadState {
+    #[serde(default)]
+    per_chat: std::collections::HashMap<String, i64>,
+    #[serde(default)]
+    all_until: i64,
+}
+
+fn hh_read_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(data_dir(app)?.join("hh_chats_read.json"))
+}
+
+fn hh_read_state(app: &tauri::AppHandle) -> HhReadState {
+    read_json(hh_read_path(app).unwrap_or_default()).unwrap_or_default()
+}
+
+fn hh_read_write(app: &tauri::AppHandle, st: &HhReadState) -> Result<(), String> {
+    write_json(hh_read_path(app)?, st)
+}
+
+// «2026-03-26T08:39:07+0300» -> unix-секунды
+fn hh_iso_ts(s: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%z")
+        .ok()
+        .map(|d| d.timestamp())
+}
+
+fn hh_mark_chat_read(app: &tauri::AppHandle, chat_id: &str) -> Result<(), String> {
+    let id = chat_id.trim().to_string();
+    if id.is_empty() {
+        return Err("Пустой id чата".into());
+    }
+    let mut st = hh_read_state(app);
+    st.per_chat.insert(id, now());
+    hh_read_write(app, &st)
+}
+
+#[tauri::command]
+async fn hh_chats_mark_read(app: tauri::AppHandle, chat_id: String) -> Result<(), String> {
+    hh_mark_chat_read(&app, &chat_id)
+}
+
+#[tauri::command]
+async fn hh_chats_mark_all_read(app: tauri::AppHandle) -> Result<(), String> {
+    let mut st = hh_read_state(&app);
+    st.all_until = now();
+    hh_read_write(&app, &st)
+}
+
+#[tauri::command]
+async fn hh_chats_list(app: tauri::AppHandle, page: Option<i64>) -> Result<serde_json::Value, String> {
+    let page = page.unwrap_or(0).max(0);
+    let r = hh_get(&app, &format!("/negotiations?per_page=20&page={}", page)).await?;
+
+    let read = hh_read_state(&app);
+    let mut items = Vec::new();
+    if let Some(list) = r["items"].as_array() {
+        for it in list {
+            let mut unread = it["counters"]["unread_messages"].as_i64().unwrap_or(0);
+            let read_at = it["id"]
+                .as_str()
+                .and_then(|id| read.per_chat.get(id))
+                .copied()
+                .unwrap_or(0)
+                .max(read.all_until);
+            if unread > 0 {
+                if let (Some(updated), true) = (hh_iso_ts(it["updated_at"].as_str().unwrap_or("")), read_at > 0) {
+                    if updated <= read_at {
+                        unread = 0;
+                    }
+                }
+            }
+            let vacancy = &it["vacancy"];
+            let employer = &vacancy["employer"];
+            items.push(json!({
+                "id": it["id"],
+                "type": "NEGOTIATION",
+                "display": {
+                    "title": employer["name"].as_str().unwrap_or("Работодатель"),
+                    "icon": employer["logo_urls"]["90"],
+                },
+                "creation_time": it["created_at"],
+                "updated_at": it["updated_at"],
+                "unread_message_count": unread,
+                "muted": false,
+                "state_name": it["state"]["name"],
+                "messaging_status": it["messaging_status"],
+                "vacancy_id": vacancy["id"],
+                "vacancy_name": vacancy["name"],
+                "vacancy_url": vacancy["alternate_url"],
+                "last_message": null,
+            }));
+        }
+    }
+    Ok(json!({
+        "items": items,
+        "found": r["found"],
+        "page": r["page"],
+        "pages": r["pages"],
+        "per_page": r["per_page"],
+    }))
+}
+
+#[tauri::command]
+async fn hh_chat_messages(
+    app: tauri::AppHandle,
+    chat_id: String,
+    page: Option<i64>,
+) -> Result<serde_json::Value, String> {
+    let chat_id = chat_id.trim();
+    if chat_id.is_empty() || chat_id.contains('/') {
+        return Err("Некорректный id чата".into());
+    }
+    let page = page.unwrap_or(0).max(0);
+    let r = hh_get(
+        &app,
+        &format!("/negotiations/{}/messages?per_page=50&page={}", chat_id, page),
+    )
+    .await?;
+
+    let mut messages = Vec::new();
+    if let Some(list) = r["items"].as_array() {
+        for m in list {
+            let mine = m["author"]["participant_type"].as_str() == Some("applicant");
+            messages.push(json!({
+                "id": m["id"],
+                "creation_time": m["created_at"],
+                "sender_participant_id": m["author"]["participant_type"],
+                "sender_display_info": {
+                    "name": if mine { "Вы" } else { "" },
+                    "is_current_participant": mine,
+                    "icon": null,
+                    "role": if mine { "APPLICANT" } else { "EMPLOYER" },
+                },
+                "payload": { "text": m["text"] },
+                "viewed_by_opponent": m["viewed_by_opponent"],
+            }));
+        }
+    }
+    let page = r["page"].as_i64().unwrap_or(page);
+    let pages = r["pages"].as_i64().unwrap_or(1);
+    Ok(json!({
+        "id": chat_id,
+        "display": { "title": "", "icon": null },
+        "messages": messages,
+        "has_more": page < pages - 1,
+        "page": page,
+        "pages": pages,
+    }))
+}
+
+#[tauri::command]
+async fn hh_chat_send(
+    app: tauri::AppHandle,
+    chat_id: String,
+    text: String,
+) -> Result<serde_json::Value, String> {
+    let chat_id = chat_id.trim();
+    if chat_id.is_empty() || chat_id.contains('/') {
+        return Err("Некорректный id чата".into());
+    }
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("Сообщение пустое".into());
+    }
+    hh_post_form(&app, &format!("/negotiations/{}/messages", chat_id), &[("message", text)]).await
+}
+
+// В старом API переписок нет отметки «прочитано»: hh.ru сам считает чат
+// прочитанным при загрузке сообщений. Команда оставлена, чтобы UI не менялся.
+#[tauri::command]
+async fn hh_chat_mark_read(
+    _app: tauri::AppHandle,
+    _chat_id: String,
+    _message_id: String,
+) -> Result<serde_json::Value, String> {
+    Ok(json!({}))
+}
+
+// справочник регионов hh.ru для фильтра «Регион»; кэшируется на время работы
+fn areas_cache() -> &'static std::sync::Mutex<Option<serde_json::Value>> {
+    static CACHE: std::sync::LazyLock<std::sync::Mutex<Option<serde_json::Value>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+    &CACHE
+}
+
+#[tauri::command]
+async fn get_areas(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    if let Some(cached) = areas_cache().lock().expect("mutex").clone() {
+        return Ok(cached);
+    }
+    let data = hh_get(&app, "/areas").await?;
+    *areas_cache().lock().expect("mutex") = Some(data.clone());
+    Ok(data)
+}
+
+// справочник профобластей hh.ru для фильтра «Профобласть»; кэшируется
+fn roles_cache() -> &'static std::sync::Mutex<Option<serde_json::Value>> {
+    static CACHE: std::sync::LazyLock<std::sync::Mutex<Option<serde_json::Value>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+    &CACHE
+}
+
+#[tauri::command]
+async fn get_professional_roles(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    if let Some(cached) = roles_cache().lock().expect("mutex").clone() {
+        return Ok(cached);
+    }
+    let data = hh_get(&app, "/professional_roles").await?;
+    *roles_cache().lock().expect("mutex") = Some(data.clone());
+    Ok(data)
+}
+
+// общий справочник hh.ru (форматы работы, рабочие часы, метки вакансий,
+// частота выплат, категории прав и т.д.) — для фильтров вкладки «Вакансии»
+fn dictionaries_cache() -> &'static std::sync::Mutex<Option<serde_json::Value>> {
+    static CACHE: std::sync::LazyLock<std::sync::Mutex<Option<serde_json::Value>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+    &CACHE
+}
+
+#[tauri::command]
+async fn get_dictionaries(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    if let Some(cached) = dictionaries_cache().lock().expect("mutex").clone() {
+        return Ok(cached);
+    }
+    let data = hh_get(&app, "/dictionaries").await?;
+    *dictionaries_cache().lock().expect("mutex") = Some(data.clone());
+    Ok(data)
+}
+
+// отрасли компаний для фильтра «Отрасль»
+fn industries_cache() -> &'static std::sync::Mutex<Option<serde_json::Value>> {
+    static CACHE: std::sync::LazyLock<std::sync::Mutex<Option<serde_json::Value>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+    &CACHE
+}
+
+#[tauri::command]
+async fn get_industries(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    if let Some(cached) = industries_cache().lock().expect("mutex").clone() {
+        return Ok(cached);
+    }
+    let data = hh_get(&app, "/industries").await?;
+    *industries_cache().lock().expect("mutex") = Some(data.clone());
+    Ok(data)
+}
+
+#[tauri::command]
+fn trackings_load(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    Ok(read_json::<serde_json::Value>(trackings_path(&app)?).unwrap_or(json!({ "items": [] })))
+}
+
+#[tauri::command]
+fn trackings_save(app: tauri::AppHandle, data: serde_json::Value) -> Result<(), String> {
+    if data["items"].as_array().is_none() {
+        return Err("Некорректный формат отслеживаний".into());
+    }
+    trackings_write(&app, data["items"].as_array().unwrap())
+}
+
+// инструмент агента: тот же поиск, но человекочитаемым списком
+async fn tool_search_vacancies(app: &tauri::AppHandle, args: &serde_json::Value) -> Result<String, String> {
+    let params = build_vacancy_query(args);
+
+    let data = hh_get(app, &format!("/vacancies?{}", params)).await?;
     let total = data["found"].as_u64().unwrap_or(0);
     let items: Vec<String> = data["items"]
         .as_array()
@@ -1547,7 +2188,7 @@ async fn tool_search_vacancies(app: &tauri::AppHandle, args: &serde_json::Value)
         })
         .collect();
     if items.is_empty() {
-        return Ok(format!("Вакансий не найдено (запрос: {}).", query));
+        return Ok(format!("Вакансий не найдено (запрос: {}).", params));
     }
     Ok(format!(
         "Найдено вакансий: {}. Показаны {} (страница {}).\n\n{}",
@@ -1827,6 +2468,117 @@ async fn tool_render_page(app: &tauri::AppHandle, args: &serde_json::Value) -> R
     Ok(text)
 }
 
+// список переписок с работодателями для агента
+async fn tool_list_chats(app: &tauri::AppHandle) -> Result<String, String> {
+    let data = hh_get(app, "/negotiations?per_page=20&page=0").await?;
+    let items = data["items"].as_array().cloned().unwrap_or_default();
+    if items.is_empty() {
+        return Ok("Переписок с работодателями пока нет.".into());
+    }
+    let read = hh_read_state(app);
+    let mut out = String::from("Переписки с работодателями:\n");
+    for it in items {
+        let vacancy = &it["vacancy"];
+        let employer = vacancy["employer"]["name"].as_str().unwrap_or("?");
+        let vname = vacancy["name"].as_str().unwrap_or("?");
+        let state = it["state"]["name"].as_str().unwrap_or("");
+        let mut unread = it["counters"]["unread_messages"].as_i64().unwrap_or(0);
+        let read_at = it["id"]
+            .as_str()
+            .and_then(|id| read.per_chat.get(id))
+            .copied()
+            .unwrap_or(0)
+            .max(read.all_until);
+        if unread > 0 {
+            if let (Some(updated), true) = (hh_iso_ts(it["updated_at"].as_str().unwrap_or("")), read_at > 0) {
+                if updated <= read_at {
+                    unread = 0;
+                }
+            }
+        }
+        let updated = it["updated_at"].as_str().unwrap_or("").get(..10).unwrap_or("");
+        let archived = it["messaging_status"].as_str() == Some("archived");
+        out.push_str(&format!(
+            "- [id: {}] {} — «{}» | статус: {} | обновлено: {}{}{}\n",
+            it["id"],
+            employer,
+            vname,
+            state,
+            updated,
+            if unread > 0 { format!(" | НЕПРОЧИТАННЫХ: {}", unread) } else { String::new() },
+            if archived { " | переписка недоступна (вакансия в архиве)".to_string() } else { String::new() },
+        ));
+    }
+    Ok(out)
+}
+
+// сообщения переписки (самые свежие), в хронологическом порядке
+async fn tool_read_chat(app: &tauri::AppHandle, args: &serde_json::Value) -> Result<String, String> {
+    let chat_id = args["chat_id"].as_str().unwrap_or("").trim().to_string();
+    if chat_id.is_empty() || chat_id.contains('/') {
+        return Err("укажи chat_id из list_chats".into());
+    }
+    let mut data = hh_get(app, &format!("/negotiations/{}/messages?per_page=50&page=0", chat_id)).await?;
+    // агент прочитал переписку — считаем её прочитанной и для вкладки «Чаты»
+    let _ = hh_mark_chat_read(app, &chat_id);
+    let pages = data["pages"].as_i64().unwrap_or(1);
+    if pages > 1 {
+        data = hh_get(
+            app,
+            &format!("/negotiations/{}/messages?per_page=50&page={}", chat_id, pages - 1),
+        )
+        .await?;
+    }
+    let items = data["items"].as_array().cloned().unwrap_or_default();
+    if items.is_empty() {
+        return Ok("В переписке пока нет сообщений.".into());
+    }
+    let mut out = String::from("Сообщения переписки:\n");
+    for m in items {
+        let mine = m["author"]["participant_type"].as_str() == Some("applicant");
+        let when = m["created_at"].as_str().unwrap_or("").replace('T', " ");
+        let text = m["text"].as_str().unwrap_or("").replace('\n', " ");
+        out.push_str(&format!(
+            "- {} {}: {}\n",
+            when,
+            if mine { "Вы" } else { "Работодатель" },
+            text
+        ));
+    }
+    Ok(out)
+}
+
+// отправка сообщения работодателю; требует подтверждения в режиме confirm
+async fn tool_send_chat_message(app: &tauri::AppHandle, args: &serde_json::Value) -> Result<String, String> {
+    let chat_id = args["chat_id"].as_str().unwrap_or("").trim().to_string();
+    let message = args["message"].as_str().unwrap_or("").trim().to_string();
+    if chat_id.is_empty() || chat_id.contains('/') {
+        return Err("укажи chat_id из list_chats".into());
+    }
+    if message.is_empty() {
+        return Err("пустое сообщение".into());
+    }
+    let tokens = valid_token(app).await?;
+    let resp = http_client()
+        .post(format!("{}/negotiations/{}/messages", HH_API_BASE, chat_id))
+        .bearer_auth(&tokens.access_token)
+        .form(&[("message", message.as_str())])
+        .send()
+        .await
+        .map_err(|e| format!("Сетевая ошибка: {}", e))?;
+    let status = resp.status();
+    let body = resp.text().await.map_err(|e| e.to_string())?;
+    if !status.is_success() {
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap_or(json!({}));
+        let desc = v["description"].as_str().unwrap_or("не удалось отправить сообщение");
+        return Err(format!("hh.ru API {}: {}", status, desc));
+    }
+    Ok(format!(
+        "Сообщение отправлено в переписку {}. Оно появится у работодателя на hh.ru и на вкладке «Чаты».",
+        chat_id
+    ))
+}
+
 async fn run_tool(
     app: &tauri::AppHandle,
     name: &str,
@@ -1859,6 +2611,13 @@ async fn run_tool(
         "read_profile" => tool_read_profile(app).await,
         "update_profile" => tool_update_profile(app, args).await,
         "search_vacancies" => tool_search_vacancies(app, args).await,
+        "list_trackings" => tool_list_trackings(app).await,
+        "create_tracking" => tool_create_tracking(app, args).await,
+        "update_tracking" => tool_update_tracking(app, args).await,
+        "delete_tracking" => tool_delete_tracking(app, args).await,
+        "list_chats" => tool_list_chats(app).await,
+        "read_chat" => tool_read_chat(app, args).await,
+        "send_chat_message" => tool_send_chat_message(app, args).await,
         "prepare_resume_texts" => tool_prepare_resume_texts(args),
         "unpublish_resume" => tool_unpublish_resume(app, args).await,
         "publish_resume" => tool_publish_resume(app, args).await,
@@ -1989,7 +2748,11 @@ fn build_system_prompt(app: &tauri::AppHandle, model: &str) -> String {
 ## Работа с hh.ru\n\n\
 По просьбе пользователя:\n\
 - ищи вакансии через search_vacancies;\n\
-- смотри резюме через list_resumes и read_resume;\n\
+- сохраняй частые поиски как отслеживания через create_tracking (список — list_trackings, \
+изменение — update_tracking, удаление — delete_tracking): они видны на вкладке «Вакансии» \
+и открываются одним нажатием;
+- смотри резюме через list_resumes и read_resume;
+- работай с переписками: список — list_chats, чтение — read_chat, отправка сообщения работодателю — send_chat_message (текст пиши от лица пользователя и заранее показывай его в ответе);\n\
 - готовь тексты для формы резюме из знаний о пользователе через prepare_resume_texts \
 (автоматического создания резюме у hh.ru нет — пользователь вставит их в форму сам);\n\
 - при подборе вакансий учитывай знания о пользователе, но уточняй, \
@@ -1999,6 +2762,128 @@ fn build_system_prompt(app: &tauri::AppHandle, model: &str) -> String {
 }
 
 // ---------------------------------------------------------------- стриминг Responses API с инструментами
+
+// ---------------------------------------------------------------- DSML
+// Некоторые модели (например, DeepSeek через прокси-провайдеры) отдают
+// вызовы инструментов своей служебной разметкой прямо в тексте ответа,
+// вместо структурных function_call. Распознаём разметку вида
+//   <｜DSML｜ calls> <｜DSML｜ invoke name="...">…</｜DSML｜ invoke> </｜DSML｜ calls>
+// превращаем её в обычные вызовы, а саму разметку из текста убираем.
+const DSML_OPEN: &str = "<｜DSML｜";
+const DSML_CLOSE: &str = "</｜DSML｜";
+
+// отдаёт накопленный «чистый» текст (без DSML-разметки); возвращает кусок,
+// который можно показать пользователю, и сколько символов он занимает.
+// Хвост, который может оказаться началом разметки, придерживаем до ясности.
+fn flush_clean_text(raw: &str, emitted: usize) -> (String, usize) {
+    let chars: Vec<char> = raw.chars().collect();
+    let mut end = chars.len();
+    for i in emitted..chars.len() {
+        if chars[i] == '<' {
+            let tail: String = chars[i..].iter().collect();
+            if DSML_OPEN.starts_with(&tail) || DSML_CLOSE.starts_with(&tail) {
+                end = i;
+                break;
+            }
+        }
+    }
+    if end <= emitted {
+        return (String::new(), emitted);
+    }
+    (chars[emitted..end].iter().collect(), end)
+}
+
+// извлекает вызовы инструментов из DSML-разметки в тексте модели
+fn parse_dsml_calls(raw: &str) -> Vec<serde_json::Value> {
+    struct Invoke {
+        name: String,
+        params: Vec<(String, String)>,
+        buf: String, // текст вне parameter — обычно JSON аргументов
+        cur_param: Option<String>,
+    }
+    let chars: Vec<char> = raw.chars().collect();
+    let mut calls: Vec<serde_json::Value> = Vec::new();
+    let mut invoke: Option<Invoke> = None;
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '<' {
+            let tail: String = chars[i..].iter().collect();
+            let (marker, is_open) = if tail.starts_with(DSML_OPEN) {
+                (DSML_OPEN, true)
+            } else if tail.starts_with(DSML_CLOSE) {
+                (DSML_CLOSE, false)
+            } else {
+                i += 1;
+                continue;
+            };
+            let after = &tail[marker.len()..];
+            let Some(gt) = after.find('>') else { break };
+            let tag = after[..gt].trim();
+            i += marker.chars().count() + after[..=gt].chars().count();
+            let mut parts = tag.splitn(2, char::is_whitespace);
+            let tag_name = parts.next().unwrap_or("");
+            let attr = parts.next().unwrap_or("");
+            let attr_name = attr
+                .split("name=\"")
+                .nth(1)
+                .and_then(|s| s.split('"').next())
+                .unwrap_or("")
+                .to_string();
+            match (is_open, tag_name) {
+                (true, "invoke") => {
+                    invoke = Some(Invoke {
+                        name: attr_name,
+                        params: Vec::new(),
+                        buf: String::new(),
+                        cur_param: None,
+                    });
+                }
+                (true, "parameter") => {
+                    if let Some(inv) = invoke.as_mut() {
+                        inv.cur_param = Some(attr_name);
+                        inv.buf.clear();
+                    }
+                }
+                (false, "parameter") => {
+                    if let Some(inv) = invoke.as_mut() {
+                        if let Some(p) = inv.cur_param.take() {
+                            inv.params.push((p, inv.buf.trim().to_string()));
+                        }
+                    }
+                }
+                (false, "invoke") => {
+                    if let Some(inv) = invoke.take() {
+                        if inv.name.is_empty() {
+                            continue;
+                        }
+                        let args: serde_json::Value = if !inv.params.is_empty() {
+                            inv.params
+                                .iter()
+                                .map(|(k, v)| (k.clone(), json!(v)))
+                                .collect::<serde_json::Map<String, serde_json::Value>>()
+                                .into()
+                        } else {
+                            serde_json::from_str(inv.buf.trim()).unwrap_or(json!({}))
+                        };
+                        calls.push(json!({
+                            "call_id": format!("dsml_{}", calls.len()),
+                            "name": inv.name,
+                            "arguments": args.to_string(),
+                        }));
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
+        // обычный текст: уходит в параметр либо в буфер аргументов invoke
+        if let Some(inv) = invoke.as_mut() {
+            inv.buf.push(chars[i]);
+        }
+        i += 1;
+    }
+    calls
+}
 
 struct StepResult {
     content: String,
@@ -2048,6 +2933,10 @@ async fn stream_step(
     }
 
     let mut content = String::new();
+    // полный текст от модели (включая DSML-разметку, если модель её
+    // выдала) и позиция «чистого» текста, уже отданного дельтами
+    let mut raw = String::new();
+    let mut emitted = 0usize;
     // вызовы инструментов накапливаем по item_id из событий; финальный
     // список берём из response.completed, если провайдер его прислал
     struct PendingCall {
@@ -2093,8 +2982,15 @@ async fn stream_step(
                 "response.output_text.delta" => {
                     if let Some(c) = v["delta"].as_str() {
                         if !c.is_empty() {
-                            content.push_str(c);
-                            on_delta(c);
+                            raw.push_str(c);
+                            // разметку DSML из дельт убираем: пользователь
+                            // должен видеть только «чистый» текст
+                            let (chunk, new_emitted) = flush_clean_text(&raw, emitted);
+                            if !chunk.is_empty() {
+                                content.push_str(&chunk);
+                                on_delta(&chunk);
+                            }
+                            emitted = new_emitted;
                         }
                     }
                 }
@@ -2179,7 +3075,7 @@ async fn stream_step(
         }
     }
 
-    let function_calls = final_calls
+    let mut function_calls = final_calls
         .unwrap_or_else(|| {
             pending
                 .into_iter()
@@ -2192,10 +3088,17 @@ async fn stream_step(
                     })
                 })
                 .collect()
-        })
-        .into_iter()
-        .filter(|c| !c["name"].as_str().unwrap_or("").is_empty())
-        .collect();
+        });
+    function_calls.retain(|c| !c["name"].as_str().unwrap_or("").is_empty());
+
+    // провайдер не прислал структурных вызовов, но модель могла отдать их
+    // служебной DSML-разметкой в тексте — пробуем распарсить
+    if function_calls.is_empty() {
+        let dsml = parse_dsml_calls(&raw);
+        if !dsml.is_empty() {
+            function_calls = dsml;
+        }
+    }
 
     Ok(StepResult { content, function_calls })
 }
@@ -2575,13 +3478,31 @@ async fn chat_run(
 
     let cancelled_run = matches!(&run_result, Err(e) if e == "__cancelled__");
 
-    // лимит шагов инструментов исчерпан без ответа
+    // финальный ответ — только из последнего шага. Текст, который модель
+    // уже прислала дельтами в предыдущих шагах (например, перед вызовами
+    // инструментов), терять нельзя: если последний шаг текста не дал,
+    // собираем ответ из всего накопленного стрима
+    if final_answer.is_empty() {
+        let streamed: String = parts_log
+            .lock()
+            .expect("mutex")
+            .iter()
+            .filter(|p| p["kind"] == "text" && p["text"].is_string())
+            .filter_map(|p| p["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("");
+        if !streamed.trim().is_empty() {
+            final_answer = streamed;
+        }
+    }
+    // настоящая ошибка провайдера важнее: показываем её, только если
+    // модель не успела сказать ничего содержательного
     if let Err(e) = &run_result {
-        if e != "__cancelled__" && final_answer.is_empty() && parts_log.lock().expect("mutex").iter().all(|p| p["kind"] != "text") {
+        if e != "__cancelled__" && final_answer.trim().is_empty() {
             return Err(e.clone());
         }
     }
-    if final_answer.is_empty() && !cancelled_run {
+    if final_answer.trim().is_empty() && !cancelled_run {
         return Err("Модель не вернула ответ".into());
     }
 
@@ -2654,6 +3575,8 @@ fn main() {
             web_action,
             publish_resume,
             open_resume_editor,
+            open_resume_creator,
+            open_url,
             profile_load,
             profile_save,
             agents_load,
@@ -2668,6 +3591,20 @@ fn main() {
             chat_stop,
             chat_confirm,
             search_test,
+            search_vacancies,
+            get_vacancy,
+            get_areas,
+            get_professional_roles,
+            get_dictionaries,
+            get_industries,
+            trackings_load,
+            trackings_save,
+            hh_chats_list,
+            hh_chats_mark_read,
+            hh_chats_mark_all_read,
+            hh_chat_messages,
+            hh_chat_send,
+            hh_chat_mark_read,
         ])
         .run(tauri::generate_context!())
         .expect("ошибка запуска HH-bot");
@@ -2694,5 +3631,56 @@ mod tests {
         assert_eq!(res[0]["title"], "Вакансии frontend");
         assert!(res[0]["snippet"].as_str().unwrap().contains("Актуальные вакансии"));
         assert_eq!(res[1]["url"], "https://hh.ru/vacancies/frontend");
+    }
+}
+
+#[cfg(test)]
+mod dsml_tests {
+    use super::*;
+
+    #[test]
+    fn parses_invoke_from_user_report() {
+        let raw = "<｜DSML｜ calls> <｜DSML｜ invoke name=\"current_datetime\">\n</｜DSML｜ invoke> </｜DSML｜ calls>";
+        let calls = parse_dsml_calls(raw);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["name"], "current_datetime");
+        assert_eq!(calls[0]["arguments"], "{}");
+    }
+
+    #[test]
+    fn parses_named_parameters() {
+        let raw = "Думаю, стоит поискать. <｜DSML｜ calls><｜DSML｜ invoke name=\"search_vacancies\">\
+<｜DSML｜ parameter name=\"text\">водитель</｜DSML｜ parameter>\
+<｜DSML｜ parameter name=\"per_page\">10</｜DSML｜ parameter>\
+</｜DSML｜ invoke></｜DSML｜ calls>";
+        let calls = parse_dsml_calls(raw);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["name"], "search_vacancies");
+        let args: serde_json::Value = serde_json::from_str(calls[0]["arguments"].as_str().unwrap()).unwrap();
+        assert_eq!(args["text"], "водитель");
+        assert_eq!(args["per_page"], "10");
+    }
+
+    #[test]
+    fn parses_json_arguments_block() {
+        let raw = "<｜DSML｜ invoke name=\"read_resume\"><｜DSML｜ parameter name=\"resume_id\">abc</｜DSML｜ parameter></｜DSML｜ invoke>";
+        let calls = parse_dsml_calls(raw);
+        assert_eq!(calls[0]["name"], "read_resume");
+    }
+
+    #[test]
+    fn holds_back_partial_markup_in_stream() {
+        // "<｜DSM" — начало разметки, пока не должно попасть в дельты
+        let (chunk, pos) = flush_clean_text("Привет <｜DSM", 0);
+        assert_eq!(chunk, "Привет ");
+        assert_eq!(pos, "Привет ".chars().count());
+        // а обычный уголок в тексте — отдаём целиком
+        let (chunk, _) = flush_clean_text("a < b > c", 0);
+        assert_eq!(chunk, "a < b > c");
+    }
+
+    #[test]
+    fn plain_text_yields_no_calls() {
+        assert!(parse_dsml_calls("Обычный ответ <b>без</b> разметки").is_empty());
     }
 }

@@ -46,6 +46,9 @@ function toolLabel(name: string, args?: Record<string, unknown>): string {
   if (name === "list_resumes") return "Смотрит резюме на hh.ru";
   if (name === "read_resume") return "Читает резюме на hh.ru";
   if (name === "search_vacancies") return "Ищет вакансии на hh.ru";
+  if (name === "list_trackings") return "Смотрит отслеживания вакансий";
+  if (name === "create_tracking") return "Создаёт отслеживание вакансий";
+  if (name === "delete_tracking") return "Удаляет отслеживание вакансий";
   if (name === "read_profile") return "Читает ваш профиль";
   if (name === "prepare_resume_texts") return "Готовит тексты для резюме";
   if (name === "set_theme") {
@@ -55,6 +58,7 @@ function toolLabel(name: string, args?: Record<string, unknown>): string {
   if (name === "navigate") {
     const tab = args?.tab as string | undefined;
     if (tab === "profile") return "Открывает раздел «Профиль»";
+    if (tab === "vacancies") return "Открывает раздел «Вакансии»";
     if (tab === "settings") return "Открывает настройки";
     return "Открывает чат";
   }
@@ -80,6 +84,9 @@ function processSummary(parts: Part[]): string {
         : p.name === "update_profile" ? "запоминал о вас"
         : p.name === "read_profile" ? "читал ваш профиль"
         : p.name === "search_vacancies" ? "искал вакансии"
+        : p.name === "list_trackings" ? "смотрел отслеживания"
+        : p.name === "create_tracking" ? "создавал отслеживание"
+        : p.name === "delete_tracking" ? "удалял отслеживание"
         : p.name === "unpublish_resume" ? "снимал резюме с публикации"
         : p.name === "publish_resume" ? "публиковал резюме"
         : p.name === "edit_resume" ? "открывал редактирование резюме"
@@ -135,7 +142,7 @@ export default function Chat({
   mode: AgentMode;
   onMode: (m: AgentMode) => void;
   onTheme: (t: "light" | "dark" | "system") => void;
-  onNavigate: (tab: "chat" | "profile" | "settings") => void;
+  onNavigate: (tab: "chat" | "vacancies" | "profile" | "settings") => void;
 }) {
   const [chats, setChats] = useState<ChatSummary[]>([]);
   const [currentId, setCurrentId] = useState<string | null>(null);
@@ -350,9 +357,9 @@ export default function Chat({
             } else if (
               e.name === "navigate" &&
               e.args?.tab &&
-              ["chat", "profile", "settings"].includes(e.args.tab)
+              ["chat", "vacancies", "profile", "settings"].includes(e.args.tab)
             ) {
-              onNavigate(e.args.tab as "chat" | "profile" | "settings");
+              onNavigate(e.args.tab as "chat" | "vacancies" | "profile" | "settings");
             }
             return prev;
           }
