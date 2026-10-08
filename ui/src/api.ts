@@ -683,7 +683,7 @@ export interface StoredChatMsg {
   role: "user" | "assistant";
   content: string;
   // полный ход ответа (размышления/инструменты/текст), сохранённый бэкендом
-  parts?: { kind: "text" | "thinking" | "tool"; text?: string; name?: string; args?: Record<string, unknown>; result?: string; label?: string; status?: string }[];
+  parts?: { kind: "text" | "thinking" | "tool"; text?: string; name?: string; args?: Record<string, unknown>; result?: string; label?: string; status?: string; elapsed_ms?: number }[];
 }
 
 export type ChatEvent =

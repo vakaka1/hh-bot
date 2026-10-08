@@ -984,7 +984,7 @@ export default function App() {
         </div>
         <nav className="pill-nav">
           <button className={"tab-btn" + (tab === "chat" ? " active" : "")} onClick={() => setTab("chat")}>
-            Чат
+            Агент
           </button>
           <button className={"tab-btn" + (tab === "vacancies" ? " active" : "")} onClick={() => setTab("vacancies")}>
             Вакансии

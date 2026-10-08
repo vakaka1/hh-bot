@@ -3302,7 +3302,25 @@ async fn chat_run(
     // сохраняется в chats.json, чтобы ход работы был виден и через год
     let parts_log: std::sync::Mutex<Vec<serde_json::Value>> =
         std::sync::Mutex::new(Vec::new());
-    fn push_delta(log: &std::sync::Mutex<Vec<serde_json::Value>>, kind: &str, c: &str) {
+    let thinking_started: std::sync::Mutex<Option<std::time::Instant>> =
+        std::sync::Mutex::new(None);
+    fn close_thinking(
+        log: &std::sync::Mutex<Vec<serde_json::Value>>,
+        started: &std::sync::Mutex<Option<std::time::Instant>>,
+    ) {
+        let elapsed = started.lock().expect("mutex").take().map(|t| t.elapsed().as_millis() as u64);
+        if let Some(last) = log.lock().expect("mutex").last_mut() {
+            if last["kind"] == "thinking" && last["elapsed_ms"].is_null() {
+                last["elapsed_ms"] = json!(elapsed.unwrap_or(0));
+            }
+        }
+    }
+    fn push_delta(
+        log: &std::sync::Mutex<Vec<serde_json::Value>>,
+        kind: &str,
+        c: &str,
+        started: &std::sync::Mutex<Option<std::time::Instant>>,
+    ) {
         let mut v = log.lock().expect("mutex");
         match v.last_mut() {
             Some(p) if p["kind"] == kind && p["text"].is_string() => {
@@ -3310,7 +3328,12 @@ async fn chat_run(
                 p["text"] = json!(format!("{}{}", cur, c));
             }
             _ => {
-                v.push(json!({ "kind": kind, "text": c }));
+                if kind == "thinking" {
+                    *started.lock().expect("mutex") = Some(std::time::Instant::now());
+                    v.push(json!({ "kind": kind, "text": c, "elapsed_ms": null }));
+                } else {
+                    v.push(json!({ "kind": kind, "text": c }));
+                }
             }
         }
     }
@@ -3325,34 +3348,47 @@ async fn chat_run(
             break Err("__cancelled__".into());
         }
 
-        let step = {
-            // каждый шаг — один запрос к провайдеру, вписываемся в его лимит
+        let mut attempt = 0;
+        let step = loop {
+            // Повторяем кратковременные сетевые/потоковые сбои. После уже
+            // показанной дельты не повторяем запрос, чтобы не дублировать текст.
             rate_limit_wait(base, rate_limit).await;
+            let emitted = AtomicBool::new(false);
             let log = &parts_log;
-            stream_step(
-                base,
-                api_key,
-                model,
-                &instructions,
-                &input,
-                &tools,
-                cancelled,
+            let result = stream_step(
+                base, api_key, model, &instructions, &input, &tools, cancelled,
                 &|c| {
-                    push_delta(log, "text", c);
+                    emitted.store(true, Ordering::Relaxed);
+                    close_thinking(log, &thinking_started);
+                    push_delta(log, "text", c, &thinking_started);
                     let _ = on_event.send(serde_json::json!({ "type": "delta", "content": c }));
                 },
                 &|c| {
-                    push_delta(log, "thinking", c);
+                    emitted.store(true, Ordering::Relaxed);
+                    push_delta(log, "thinking", c, &thinking_started);
                     let _ = on_event.send(serde_json::json!({ "type": "reasoning", "content": c }));
                 },
-            )
-            .await
+            ).await;
+            match result {
+                Ok(value) => break Ok(value),
+                Err(err) if err != "__cancelled__" && attempt < 2
+                    && !emitted.load(Ordering::Relaxed) => {
+                    attempt += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(400 * attempt)).await;
+                }
+                other => break other,
+            }
         };
 
         let result = match step {
             Ok(r) => r,
             Err(e) => break Err(e),
         };
+
+        // Каждый ответ модели завершает текущий фрагмент размышления.
+        // Фиксируем длительность до обработки вызовов/перехода к следующему шагу,
+        // чтобы она гарантированно попала в сохранённый parts_log.
+        close_thinking(&parts_log, &thinking_started);
 
         if !result.function_calls.is_empty() {
             // текст перед вызовами инструментов уже отдан дельтами; в input
@@ -3362,6 +3398,9 @@ async fn chat_run(
                 let args_s = call["arguments"].as_str().unwrap_or("{}").to_string();
                 let args: serde_json::Value = serde_json::from_str(&args_s).unwrap_or(json!({}));
                 let call_id = call["call_id"].as_str().unwrap_or("call").to_string();
+
+                // Завершаем длительность текущего размышления перед действием.
+                close_thinking(&parts_log, &thinking_started);
 
                 // подтверждение действия в режиме confirm
                 let mut approved = mode != "confirm" || !is_app_action(&name);
@@ -3499,12 +3538,14 @@ async fn chat_run(
     // модель не успела сказать ничего содержательного
     if let Err(e) = &run_result {
         if e != "__cancelled__" && final_answer.trim().is_empty() {
-            return Err(e.clone());
+            final_answer = format!("Не удалось получить ответ: {}", e);
         }
     }
     if final_answer.trim().is_empty() && !cancelled_run {
         return Err("Модель не вернула ответ".into());
     }
+
+    close_thinking(&parts_log, &thinking_started);
 
     // ---- сохраняем ответ ассистента (в т.ч. частичный при отмене) вместе
     // с полным ходом работы — он остаётся в chats.json навсегда

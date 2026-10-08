@@ -2,12 +2,19 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { api, AgentStore, AgentMode, AGENT_MODES, ChatEvent, ChatSummary, ModelEntry, loadAllModels, parseModelValue } from "./api";
 import ModelSelect from "./ModelSelect";
 import Markdown from "./Markdown";
+import {
+  BookmarkCheck, BookmarkPlus, BookmarkX, BriefcaseBusiness, BrainCircuit, ChevronDown,
+  CalendarClock, CircleUserRound, FileCheck, FileSearch, FileText, Files,
+  FileX, Globe, LayoutPanelTop, ListChecks,
+  MessageSquareText, Navigation, Palette, Pencil, Search, Send, Trash2,
+  UserRoundPen, Wrench,
+} from "lucide-react";
 
 // Хронологические сегменты ответа агента: текст, размышления и вызовы
 // инструментов идут в том порядке, в каком происходили.
 type Part =
-  | { kind: "text"; text: string }
-  | { kind: "thinking"; text: string }
+  | { kind: "text"; text: string; final?: boolean }
+  | { kind: "thinking"; text: string; startedAt?: number; elapsedMs?: number }
   | {
       kind: "tool";
       name: string;
@@ -32,6 +39,8 @@ interface ChatEntry {
   confirms?: ConfirmRun[];
   // блок «Ход работы» раскрыт (во время стрима — по умолчанию да)
   processOpen?: boolean;
+  startedAt?: number;
+  elapsedMs?: number;
 }
 
 function toolLabel(name: string, args?: Record<string, unknown>): string {
@@ -69,45 +78,57 @@ function toolLabel(name: string, args?: Record<string, unknown>): string {
   return name;
 }
 
-// краткая сводка свёрнутого блока «Ход работы»
-function processSummary(parts: Part[]): string {
-  const bits: string[] = [];
-  for (const p of parts) {
-    if (p.kind === "thinking" && !bits.includes("размышлял")) bits.push("размышлял");
-    if (p.kind === "tool") {
-      const verb =
-        p.name === "web_search" ? "искал в сети"
-        : p.name === "fetch_url" ? "читал страницы"
-        : p.name === "list_resumes" ? "смотрел резюме"
-        : p.name === "set_theme" ? "менял тему"
-        : p.name === "navigate" ? "открывал разделы"
-        : p.name === "update_profile" ? "запоминал о вас"
-        : p.name === "read_profile" ? "читал ваш профиль"
-        : p.name === "search_vacancies" ? "искал вакансии"
-        : p.name === "list_trackings" ? "смотрел отслеживания"
-        : p.name === "create_tracking" ? "создавал отслеживание"
-        : p.name === "delete_tracking" ? "удалял отслеживание"
-        : p.name === "unpublish_resume" ? "снимал резюме с публикации"
-        : p.name === "publish_resume" ? "публиковал резюме"
-        : p.name === "edit_resume" ? "открывал редактирование резюме"
-        : p.name;
-      if (!bits.includes(verb)) bits.push(verb);
-    }
+function thoughtTail(text: string, wordLimit = 12): string {
+  const words = text.trim().replace(/\s+/g, " ").split(" ").filter(Boolean);
+  return `${words.length > wordLimit ? "…" : ""}${words.slice(-wordLimit).join(" ")}`;
+}
+
+function finishLastThought(parts: Part[]): Part[] {
+  const next = [...parts];
+  const last = next[next.length - 1];
+  if (last?.kind === "thinking" && last.elapsedMs === undefined) {
+    next[next.length - 1] = { ...last, elapsedMs: last.startedAt ? Date.now() - last.startedAt : 0 };
   }
-  return bits.join(" · ");
+  return next;
+}
+
+function toolIcon(name: string) {
+  if (name === "web_search") return Search;
+  if (name === "fetch_url") return Globe;
+  if (name === "render_page") return LayoutPanelTop;
+  if (name === "send_chat_message") return Send;
+  if (name === "list_chats" || name === "read_chat") return MessageSquareText;
+  if (name === "search_vacancies") return BriefcaseBusiness;
+  if (name === "list_resumes") return Files;
+  if (name === "read_resume") return FileSearch;
+  if (name === "prepare_resume_texts") return FileText;
+  if (name === "edit_resume") return Pencil;
+  if (name === "publish_resume") return FileCheck;
+  if (name === "unpublish_resume") return FileX;
+  if (name === "read_profile") return CircleUserRound;
+  if (name === "update_profile") return UserRoundPen;
+  if (name === "list_trackings") return ListChecks;
+  if (name === "update_tracking") return BookmarkCheck;
+  if (name === "delete_tracking") return BookmarkX;
+  if (name === "create_tracking") return BookmarkPlus;
+  if (name === "navigate") return Navigation;
+  if (name === "set_theme") return Palette;
+  if (name.startsWith("delete")) return Trash2;
+  if (name === "current_datetime") return CalendarClock;
+  return Wrench;
 }
 
 // восстановление сегментов из сохранённого чата: берём полный ход работы,
 // если он записан, иначе обычный текст
 function restoreParts(m: {
   content: string;
-  parts?: { kind: string; text?: string; name?: string; args?: Record<string, unknown>; result?: string; label?: string; status?: string }[];
+  parts?: { kind: string; text?: string; name?: string; args?: Record<string, unknown>; result?: string; label?: string; status?: string; elapsed_ms?: number }[];
 }): Part[] {
   if (m.parts && m.parts.length > 0) {
     const parts: Part[] = [];
     for (const p of m.parts) {
       if (p.kind === "text" && p.text) parts.push({ kind: "text", text: p.text });
-      else if (p.kind === "thinking" && p.text) parts.push({ kind: "thinking", text: p.text });
+      else if (p.kind === "thinking" && p.text) parts.push({ kind: "thinking", text: p.text, elapsedMs: p.elapsed_ms });
       else if (p.kind === "tool" && p.name)
         parts.push({
           kind: "tool",
@@ -118,7 +139,11 @@ function restoreParts(m: {
           result: p.result,
         });
     }
-    if (parts.length > 0) return parts;
+    if (parts.length > 0) {
+      const lastText = parts.map((p) => p.kind).lastIndexOf("text");
+      if (lastText >= 0 && parts[lastText].kind === "text") parts[lastText] = { ...parts[lastText], final: true };
+      return parts;
+    }
   }
   return m.content ? [{ kind: "text", text: m.content }] : [];
 }
@@ -158,6 +183,11 @@ export default function Chat({
   const stickBottomRef = useRef(true);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const allowedNamesRef = useRef<Set<string>>(new Set());
+  const activeChatIdRef = useRef<string | null>(currentId);
+  activeChatIdRef.current = currentId;
+  const entriesByChatRef = useRef<Map<string, ChatEntry[]>>(new Map());
+  const runningChatsRef = useRef<Set<string>>(new Set());
+  const [runningChatIds, setRunningChatIds] = useState<Set<string>>(new Set());
 
   const active =
     store.active !== null && store.active < store.providers.length
@@ -240,19 +270,28 @@ export default function Chat({
   useLayoutEffect(() => scrollToEnd(), [entries]);
 
   function openChat(id: string) {
-    if (streaming) return;
+    if (id === currentId) return;
     setCurrentId(id);
+    setStreaming(runningChatsRef.current.has(id));
+    const cached = entriesByChatRef.current.get(id);
+    if (cached) setEntries(cached);
     api
       .chatGet(id)
-      .then((msgs) =>
-        setEntries(msgs.map((m) => ({ role: m.role, parts: restoreParts(m) })))
-      )
+      .then((msgs) => {
+        if (activeChatIdRef.current !== id) return;
+        const restored = msgs.map((m) => ({ role: m.role, parts: restoreParts(m) }));
+        const live = entriesByChatRef.current.get(id);
+        const merged = live?.some((entry) => entry.streaming) ? live : restored;
+        entriesByChatRef.current.set(id, merged);
+        setEntries(merged);
+      })
       .catch(() => {});
   }
 
   function newChat() {
-    if (streaming) return;
+    if (currentId === null && entries.length === 0) return;
     setCurrentId(null);
+    setStreaming(false);
     setEntries([]);
   }
 
@@ -268,12 +307,15 @@ export default function Chat({
   }
 
   const handleEvent = useCallback(
-    (e: ChatEvent) => {
-      setEntries((prev) => {
+    (targetId: string, e: ChatEvent) => {
+      // A stream belongs to the chat that started it. Background events must
+      // never leak into whichever conversation the user has opened meanwhile.
+      setEntries((visible) => {
+        const prev = entriesByChatRef.current.get(targetId) || (activeChatIdRef.current === targetId ? visible : []);
         const last = prev[prev.length - 1];
         const ensureAssistant = (): ChatEntry[] => {
           if (last && last.role === "assistant" && last.streaming) return prev;
-          return [...prev, { role: "assistant", parts: [], streaming: true, processOpen: true }];
+          return [...prev, { role: "assistant", parts: [], streaming: true, processOpen: true, startedAt: Date.now() }];
         };
         const patchLast = (patch: (e0: ChatEntry) => ChatEntry): ChatEntry[] => {
           const next = ensureAssistant();
@@ -281,10 +323,11 @@ export default function Chat({
           return [...next.slice(0, -1), patch(lastA)];
         };
 
+        let result: ChatEntry[];
         switch (e.type) {
           case "delta":
-            return patchLast((e0) => {
-              const parts = [...e0.parts];
+            result = patchLast((e0) => {
+              const parts = finishLastThought(e0.parts);
               const lastP = parts[parts.length - 1];
               if (lastP && lastP.kind === "text") {
                 parts[parts.length - 1] = { ...lastP, text: lastP.text + e.content };
@@ -292,23 +335,23 @@ export default function Chat({
                 parts.push({ kind: "text", text: e.content });
               }
               return { ...e0, parts };
-            });
+            }); break;
           case "reasoning":
-            return patchLast((e0) => {
+            result = patchLast((e0) => {
               const parts = [...e0.parts];
               const lastP = parts[parts.length - 1];
-              if (lastP && lastP.kind === "thinking") {
+              if (lastP && lastP.kind === "thinking" && lastP.elapsedMs === undefined) {
                 parts[parts.length - 1] = { ...lastP, text: lastP.text + e.content };
               } else {
-                parts.push({ kind: "thinking", text: e.content });
+                parts.push({ kind: "thinking", text: e.content, startedAt: Date.now() });
               }
               return { ...e0, parts };
-            });
+            }); break;
           case "tool_start":
-            return patchLast((e0) => ({
+            result = patchLast((e0) => ({
               ...e0,
               parts: [
-                ...e0.parts,
+                ...finishLastThought(e0.parts),
                 {
                   kind: "tool",
                   name: e.name,
@@ -317,39 +360,39 @@ export default function Chat({
                   args: e.args,
                 },
               ],
-            }));
+            })); break;
           case "tool_end":
-            return patchLast((e0) => ({
+            result = patchLast((e0) => ({
               ...e0,
               parts: e0.parts.map((p) =>
                 p.kind === "tool" && p.name === e.name && p.status === "running"
                   ? { ...p, status: "done" as const, result: e.result }
                   : p
               ),
-            }));
+            })); break;
           case "confirm_request": {
             // «всегда разрешать» — отвечаем молча, без карточки
-            if (allowedNamesRef.current.has(e.name) && currentId) {
-              api.chatConfirm(currentId, e.call_id, "allow");
-              return prev;
+            if (allowedNamesRef.current.has(e.name)) {
+              api.chatConfirm(targetId, e.call_id, "allow");
+              return visible;
             }
-            return patchLast((e0) => ({
+            result = patchLast((e0) => ({
               ...e0,
               confirms: [
                 ...(e0.confirms || []),
                 { call_id: e.call_id, name: e.name, args: e.args, status: "pending" },
               ],
-            }));
+            })); break;
           }
           case "confirm_result":
-            return patchLast((e0) => ({
+            result = patchLast((e0) => ({
               ...e0,
               confirms: (e0.confirms || []).map((c) =>
                 c.call_id === e.call_id
                   ? { ...c, status: e.decision === "allow" ? ("allowed" as const) : ("denied" as const) }
                   : c
               ),
-            }));
+            })); break;
           case "do_action": {
             const th = e.name === "set_theme" ? e.args?.theme : undefined;
             if (th === "light" || th === "dark" || th === "system") {
@@ -361,12 +404,17 @@ export default function Chat({
             ) {
               onNavigate(e.args.tab as "chat" | "vacancies" | "profile" | "settings");
             }
-            return prev;
+            result = prev; break;
           }
           case "done":
-            return patchLast((e0) => ({ ...e0, streaming: false, processOpen: false }));
+            result = patchLast((e0) => {
+              const closed = finishLastThought(e0.parts);
+              const lastText = closed.map((p) => p.kind).lastIndexOf("text");
+              const parts = closed.map((p, index) => p.kind === "text" ? { ...p, final: index === lastText } : p);
+              return { ...e0, parts, streaming: false, processOpen: false, elapsedMs: e0.startedAt ? Date.now() - e0.startedAt : undefined };
+            }); break;
           case "cancelled":
-            return patchLast((e0) => {
+            result = patchLast((e0) => {
               const hasText = e0.parts.some((p) => p.kind === "text" && p.text.trim());
               const parts = e0.parts.map((p) =>
                 p.kind === "tool" && p.status === "running"
@@ -377,49 +425,74 @@ export default function Chat({
                 ...e0,
                 streaming: false,
                 processOpen: false,
-                parts: hasText ? parts : [...parts, { kind: "text" as const, text: "_Остановлено._" }],
+                elapsedMs: e0.startedAt ? Date.now() - e0.startedAt : undefined,
+                parts: hasText ? finishLastThought(parts) : [...finishLastThought(parts), { kind: "text" as const, text: "_Остановлено._" }],
               };
-            });
+            }); break;
           case "error":
-            return patchLast((e0) => ({ ...e0, streaming: false, processOpen: false, error: e.message }));
+            result = patchLast((e0) => ({ ...e0, parts: finishLastThought(e0.parts), streaming: false, processOpen: false, error: e.message })); break;
           default:
-            return prev;
+            result = prev;
         }
+        entriesByChatRef.current.set(targetId, result);
+        if (e.type === "done" || e.type === "error" || e.type === "cancelled") {
+          runningChatsRef.current.delete(targetId);
+        }
+        return activeChatIdRef.current === targetId ? result : visible;
       });
+      if (e.type === "done" || e.type === "error" || e.type === "cancelled") {
+        setRunningChatIds(new Set(runningChatsRef.current));
+      }
     },
-    [currentId]
+    []
   );
 
   async function send() {
     const message = text.trim();
-    if (!message || streaming) return;
+    const targetId = currentId ?? newChatId();
+    if (!message || runningChatsRef.current.has(targetId)) return;
 
-    const id = currentId ?? newChatId();
+    const id = targetId;
     setCurrentId(id);
+    runningChatsRef.current.add(id);
+    setRunningChatIds(new Set(runningChatsRef.current));
     setText("");
     setStreaming(true);
     stickBottomRef.current = true;
-    setEntries((prev) => [
+    setEntries((prev) => {
+      const next = [
       ...prev,
       { role: "user", parts: [{ kind: "text", text: message }] },
       // мгновенный отклик: пузырь агента с точками ещё до первого события
-      { role: "assistant", parts: [], streaming: true, processOpen: true },
-    ]);
+      { role: "assistant", parts: [], streaming: true, processOpen: true, startedAt: Date.now() },
+      ] as ChatEntry[];
+      entriesByChatRef.current.set(id, next);
+      return next;
+    });
+    setChats((prev) => {
+      const existing = prev.find((chat) => chat.id === id);
+      const chat = existing
+        ? { ...existing, updated_at: Date.now() / 1000 }
+        : { id, title: message.slice(0, 48), updated_at: Date.now() / 1000 };
+      return [chat, ...prev.filter((item) => item.id !== id)];
+    });
 
     try {
       // модель хранится как «провайдер::модель» — запрос уходит её провайдеру
       const sel = parseModelValue(chatModel);
-      await api.chatStartStream(id, message, sel.model, sel.provider, mode, handleEvent);
+      await api.chatStartStream(id, message, sel.model, sel.provider, mode, (event) => handleEvent(id, event));
     } catch (e) {
-      handleEvent({ type: "error", message: String(e) });
+      handleEvent(id, { type: "error", message: String(e) });
     } finally {
-      setStreaming(false);
+      runningChatsRef.current.delete(id);
+      setRunningChatIds(new Set(runningChatsRef.current));
+      setStreaming(runningChatsRef.current.has(activeChatIdRef.current || ""));
       refreshChats();
     }
   }
 
   function stop() {
-    if (currentId) api.chatStop(currentId);
+    if (currentId && runningChatsRef.current.has(currentId)) api.chatStop(currentId);
   }
 
   // «Всегда разрешать» — в рамках чата запоминаем выбранный тип действия
@@ -427,7 +500,7 @@ export default function Chat({
     if (decision === "allow_always") {
       allowedNamesRef.current.add(c.name);
     }
-    handleEvent({ type: "confirm_result", call_id: c.call_id, decision: decision === "deny" ? "deny" : "allow" });
+    if (currentId) handleEvent(currentId, { type: "confirm_result", call_id: c.call_id, decision: decision === "deny" ? "deny" : "allow" });
     if (currentId) api.chatConfirm(currentId, c.call_id, decision === "deny" ? "deny" : "allow");
   }
 
@@ -451,7 +524,7 @@ export default function Chat({
   return (
     <div className="chat-layout">
       <aside className="chat-sidebar">
-        <button className="new-chat-btn" onClick={newChat} disabled={streaming}>
+        <button className="new-chat-btn" onClick={newChat}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
             <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
           </svg>
@@ -465,6 +538,7 @@ export default function Chat({
             onClick={() => openChat(c.id)}
             title={c.title}
           >
+            {runningChatIds.has(c.id) && <span className="chat-item-live" role="img" aria-label="Агент работает" />}
             <span className="chat-item-label">{c.title}</span>
             <button
               className="chat-item-del"
@@ -523,25 +597,6 @@ export default function Chat({
         )}
 
         <div className="chat-composer-wrap">
-          <div className="chat-mode-row">
-            <div className="segmented small" title="Права агента в приложении">
-              {AGENT_MODES.map((m) => (
-                <button
-                  key={m.id}
-                  className={"seg" + (mode === m.id ? " active" : "")}
-                  onClick={() => onMode(m.id)}
-                  disabled={streaming}
-                  title={m.hint}
-                >
-                  {m.label}
-                </button>
-              ))}
-            </div>
-            {mode === "confirm" && (
-              <span className="mode-hint">действия — после подтверждения</span>
-            )}
-            {mode === "full" && <span className="mode-hint warn">действия выполняются без запроса</span>}
-          </div>
           <div className="chat-composer">
           <textarea
             ref={inputRef}
@@ -587,6 +642,15 @@ export default function Chat({
             </button>
           )}
           </div>
+          <div className="chat-mode-row">
+            <span className="mode-caption">Режим агента</span>
+            <div className="segmented small" title="Права агента в приложении">
+              {AGENT_MODES.map((m) => (
+                <button key={m.id} className={"seg" + (mode === m.id ? " active" : "")} onClick={() => onMode(m.id)} disabled={streaming} title={m.hint}>{m.label}</button>
+              ))}
+            </div>
+            {mode !== "chat" && <span className={"mode-hint" + (mode === "full" ? " warn" : "")}>{mode === "confirm" ? "Действия после подтверждения" : "Действия без подтверждения"}</span>}
+          </div>
         </div>
       </div>
     </div>
@@ -596,36 +660,36 @@ export default function Chat({
 // один вызов инструмента с раскрываемыми деталями (JSON запроса и ответа)
 function ToolPartView({ part }: { part: Extract<Part, { kind: "tool" }> }) {
   const [open, setOpen] = useState(false);
+  const restoreScrollTop = useRef<number | null>(null);
   const hasDetails = Boolean(
     (part.args && Object.keys(part.args).length > 0) || part.result
   );
+  useLayoutEffect(() => {
+    if (restoreScrollTop.current === null) return;
+    const top = restoreScrollTop.current;
+    restoreScrollTop.current = null;
+    const scroller = document.querySelector<HTMLElement>(".chat-scroll");
+    if (scroller) scroller.scrollTop = top;
+  }, [open]);
   return (
-    <div className="tool-part">
-      <span className={"tool-chip" + (part.status === "running" ? " running" : "")}>
-        {part.status === "running" ? (
-          <span className="tool-spinner" aria-hidden="true" />
-        ) : (
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <path d="M5 13l4 4L19 7" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        )}
-        {part.label}
-        {hasDetails && (
-          <button
-            type="button"
-            className="tool-details-btn"
-            onClick={() => setOpen((o) => !o)}
-            title="Показать JSON запроса и ответа"
-          >
-            {open ? "скрыть" : "детали"}
-          </button>
-        )}
-      </span>
-      {open && hasDetails && (
-        <div className="tool-details">
+    <div className={"tool-call" + (part.status === "running" ? " running" : "")}>
+      <button type="button" className="tool-call-row" onClick={(event) => {
+        if (!hasDetails) return;
+        const scroller = event.currentTarget.closest<HTMLElement>(".chat-scroll");
+        restoreScrollTop.current = scroller?.scrollTop ?? null;
+        setOpen((o) => !o);
+      }} aria-expanded={open}>
+        {(() => { const Icon = toolIcon(part.name); return <Icon className="tool-call-icon" size={16} strokeWidth={1.8} aria-hidden="true" />; })()}
+        <span className="tool-call-title">{part.label}</span>
+        {part.status === "running" && <span className="tool-spinner" aria-label="Выполняется" />}
+        {hasDetails && <ChevronDown className={"tool-call-chevron" + (open ? " open" : "")} size={15} aria-hidden="true" />}
+      </button>
+      {hasDetails && (
+        <div className={"tool-details-clip" + (open ? " expanded" : "")}>
+        <div className="tool-details-plain">
           {part.args && Object.keys(part.args).length > 0 && (
             <>
-              <div className="tool-details-label">Запрос</div>
+              <div className="tool-details-label">Аргументы</div>
               <pre>{JSON.stringify(part.args, null, 2)}</pre>
             </>
           )}
@@ -636,7 +700,40 @@ function ToolPartView({ part }: { part: Extract<Part, { kind: "tool" }> }) {
             </>
           )}
         </div>
+        </div>
       )}
+    </div>
+  );
+}
+
+function ThinkingPartView({ part, streaming }: {
+  part: Extract<Part, { kind: "thinking" }>;
+  streaming: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const restoreScrollTop = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    if (restoreScrollTop.current === null) return;
+    const top = restoreScrollTop.current;
+    restoreScrollTop.current = null;
+    const scroller = document.querySelector<HTMLElement>(".chat-scroll");
+    if (scroller) scroller.scrollTop = top;
+  }, [open]);
+  return (
+    <div className="thinking-step">
+      <button type="button" className="thinking-row" onClick={(event) => {
+        const scroller = event.currentTarget.closest<HTMLElement>(".chat-scroll");
+        restoreScrollTop.current = scroller?.scrollTop ?? null;
+        setOpen((value) => !value);
+      }} aria-expanded={open}>
+        <BrainCircuit size={16} strokeWidth={1.8} aria-hidden="true" />
+        <span className="thinking-label">{streaming ? "Размышляет" : "Размышлял"}</span>
+        {streaming && part.elapsedMs === undefined
+          ? <span className="thinking-preview">{thoughtTail(part.text)}</span>
+          : <span className="thinking-duration">{part.elapsedMs !== undefined ? `${Math.max(1, Math.round(part.elapsedMs / 1000))} сек.` : ""}</span>}
+        <ChevronDown className={"thinking-chevron" + (open ? " open" : "")} size={15} aria-hidden="true" />
+      </button>
+      <div className={"thinking-details-clip" + (open ? " expanded" : "")}><div className="thinking-details">{part.text}</div></div>
     </div>
   );
 }
@@ -653,63 +750,48 @@ function AgentMessage({
   onDecide: (c: ConfirmRun, d: "allow" | "allow_always" | "deny") => void;
 }) {
   const process = m.parts.filter((p) => p.kind !== "text");
-  const answer = m.parts
-    .filter((p): p is Extract<Part, { kind: "text" }> => p.kind === "text")
-    .map((p) => p.text)
-    .join("\n\n");
-  const working = m.streaming && !answer.trim();
+  const working = m.streaming;
 
   return (
     <div className="msg-agent">
       {process.length > 0 && (
-        <div className={"process" + (m.processOpen ? " open" : "")}>
-          <button type="button" className="process-head" onClick={onToggle}>
-            {m.streaming ? (
-              <span className="tool-spinner" aria-hidden="true" />
-            ) : (
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                <path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.4 1 2.3h6c0-.9.4-1.8 1-2.3A7 7 0 0 0 12 2z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-            )}
-            <span className="process-title">
-              {m.streaming ? "Агент работает…" : "Ход работы"}
-            </span>
-            {!m.processOpen && !m.streaming && process.length > 0 && (
-              <span className="process-summary">{processSummary(process)}</span>
-            )}
-            <svg className="process-chevron" width="11" height="11" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
+        <div className={"work-process" + (m.processOpen ? " open" : "")}>
+          <button type="button" className="work-process-head" onClick={(event) => {
+            const scroller = event.currentTarget.closest<HTMLElement>(".chat-scroll");
+            const top = scroller?.scrollTop;
+            onToggle();
+            if (scroller && top !== undefined) requestAnimationFrame(() => { scroller.scrollTop = top; });
+          }} aria-expanded={Boolean(m.processOpen)}>
+            Ход работы
+            {!m.streaming && m.elapsedMs !== undefined && <span className="work-process-summary">{Math.max(1, Math.round(m.elapsedMs / 1000))} сек.</span>}
+            <ChevronDown className="work-process-chevron" size={16} aria-hidden="true" />
           </button>
-          {m.processOpen && (
-            <div className="process-body">
-              {process.map((p, j) =>
-                p.kind === "tool" ? (
-                  <ToolPartView key={j} part={p} />
-                ) : p.kind === "thinking" ? (
-                  <div className="process-think" key={j}>
-                    {process.filter((q) => q.kind === "thinking").indexOf(p) > 0 && (
-                      <div className="process-label">Снова размышляет</div>
-                    )}
-                    <div className="process-think-text">{p.text}</div>
-                  </div>
-                ) : null
-              )}
+          <div className="work-process-body" aria-hidden={!m.processOpen}>
+            <div className="work-process-inner">
+            {m.parts.filter((p) => p.kind !== "text" || !p.final).map((p, j) => p.kind === "text" ? (
+              <div className="agent-intermediate" key={j}><Markdown text={p.text} /></div>
+            ) : p.kind === "tool" ? (
+              <ToolPartView key={j} part={p} />
+            ) : (
+              <ThinkingPartView key={j} part={p} streaming={Boolean(m.streaming && p.elapsedMs === undefined)} />
+            ))}
             </div>
-          )}
+          </div>
         </div>
       )}
 
-      {answer && <Markdown text={answer} />}
+      {m.parts.filter((p): p is Extract<Part, { kind: "text" }> => p.kind === "text" && Boolean(p.final)).map((p, j) => (
+        <div className="agent-final" key={`final-${j}`}><Markdown text={p.text} /></div>
+      ))}
 
-      {working && process.length === 0 && (
-        <div className="typing" aria-label="Агент печатает">
-          <span /><span /><span />
+      {working && m.parts.length === 0 && (
+        <div className="thinking" aria-label="Агент печатает">
+          <span className="thinking-text">Думаю…</span>
         </div>
       )}
-      {working && process.length > 0 && (
-        <div className="typing inline" aria-label="Агент печатает">
-          <span /><span /><span />
+      {working && process.length > 0 && !m.parts.some((p) => p.kind === "text") && (
+        <div className="thinking inline" aria-label="Агент печатает">
+          <span className="thinking-text">Думаю…</span>
         </div>
       )}
 
