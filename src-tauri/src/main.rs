@@ -779,6 +779,9 @@ struct ChatMsg {
     // полный ход ответа для показа в истории: размышления, инструменты, текст
     #[serde(default, skip_serializing_if = "Option::is_none")]
     parts: Option<serde_json::Value>,
+    // ошибка завершившегося запуска отображается и после повторного открытия чата
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
     // служебные поля OpenAI для эхо-сообщений с tool_calls
     #[serde(default, skip_serializing_if = "Option::is_none")]
     tool_calls: Option<serde_json::Value>,
@@ -919,8 +922,17 @@ fn chat_stop(chat_id: String) {
 
 // ---------------------------------------------------------------- инструменты агента
 
-const MAX_TOOL_STEPS: usize = 6;
+const MAX_TOOL_STEPS: usize = 40;
 const MAX_URL_CHARS: usize = 12_000;
+const PROVIDER_REQUEST_TIMEOUT_SECS: u64 = 120;
+const TOOL_TIMEOUT_SECS: u64 = 60;
+
+fn uuid_like_id() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0)
+}
 
 async fn tool_web_search(args: &serde_json::Value, search_url: Option<&str>) -> Result<String, String> {
     let query = args["query"]
@@ -1252,6 +1264,9 @@ async fn tool_fetch_url(args: &serde_json::Value) -> Result<String, String> {
 
     let mut text = raw.split_whitespace().collect::<Vec<_>>().join(" ");
     text.truncate(MAX_URL_CHARS);
+    if text.trim().is_empty() && url.contains("hh.ru/") {
+        return Err("Страница hh.ru вернула пустой HTML без JavaScript. Используй render_page для загрузки страницы во встроенном браузере.".into());
+    }
     Ok(format!("Содержимое {} (первые {} символов):\n\n{}", url, text.len(), text))
 }
 
@@ -1268,7 +1283,7 @@ const TOOLS_JSON: &str = r#"[
     "type": "function",
     "function": {
       "name": "web_search",
-      "description": "Поиск в интернете (DuckDuckGo). Возвращает список результатов: заголовок, URL, краткое описание. Используй для актуальной информации: вакансии, зарплаты, компании, новости.",
+      "description": "Поиск в интернете через Brave или настроенный SearXNG (не DuckDuckGo). Возвращает список результатов: заголовок, URL, краткое описание. Используй для актуальной информации: вакансии, зарплаты, компании, новости.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -1304,12 +1319,12 @@ const TOOLS_JSON: &str = r#"[
     "type": "function",
     "function": {
       "name": "search_vacancies",
-      "description": "Поиск вакансий на hh.ru. Возвращает список: название, зарплата, работодатель, регион, ссылка. Требует входа в hh.ru.",
+      "description": "Поиск вакансий через поиск приложения (не напрямую из инструмента агента в hh API). Возвращает список: название, зарплата, работодатель, регион, ссылка.",
       "parameters": {
         "type": "object",
         "properties": {
           "text": { "type": "string", "description": "Поисковая фраза (название профессии, ключевые слова)" },
-          "area": { "type": "string", "description": "Регион поиска — id или название области/города (например, Москва)" },
+          "area": { "type": "string", "description": "Регион поиска — можно указать ID или название города/области (например, Тверь или Москва)" },
           "experience": { "type": "string", "enum": ["no_experience", "between1And3", "between3And6", "moreThan6"], "description": "Требуемый опыт" },
           "employment": { "type": "string", "enum": ["full", "part", "project", "internship"], "description": "Занятость" },
           "schedule": { "type": "string", "enum": ["full_day", "flexible", "remote", "hybrid", "shift", "fly_in_fly_out"], "description": "График" },
@@ -1823,14 +1838,23 @@ async fn tool_delete_tracking(app: &tauri::AppHandle, args: &serde_json::Value) 
     ))
 }
 
-// поиск вакансий для вкладки: возвращает ответ hh.ru как есть
+// Единая точка поиска вакансий для вкладки и агента. Внутренний API приложения
+// скрывает источник данных от UI/агента и нормализует выдачу.
+async fn vacancies_search_internal(
+    app: &tauri::AppHandle,
+    params: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let query = build_vacancy_query(params);
+    hh_get(app, &format!("/vacancies?{}", query)).await
+}
+
+// поиск вакансий для вкладки
 #[tauri::command]
 async fn search_vacancies(
     app: tauri::AppHandle,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
-    let query = build_vacancy_query(&params.unwrap_or(json!({})));
-    hh_get(&app, &format!("/vacancies?{}", query)).await
+    vacancies_search_internal(&app, &params.unwrap_or(json!({}))).await
 }
 
 // одна вакансия целиком — для просмотра деталей на вкладке
@@ -2077,6 +2101,49 @@ async fn get_areas(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     Ok(data)
 }
 
+fn find_area_id(tree: &serde_json::Value, name: &str) -> Option<String> {
+    let target = name.trim();
+    let items = tree.as_array()?;
+    // Сначала точное совпадение, чтобы «Тверь» не подменилась регионом.
+    for item in items {
+        if item["name"].as_str().is_some_and(|n| n.eq_ignore_ascii_case(target)) {
+            return item["id"].as_str().map(str::to_owned);
+        }
+        if let Some(found) = find_area_id(&item["areas"], target) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+async fn resolve_vacancy_area(app: &tauri::AppHandle, args: &serde_json::Value) -> serde_json::Value {
+    let Some(area) = args["area"].as_str().map(str::trim).filter(|s| !s.is_empty()) else {
+        return args.clone();
+    };
+    if area.parse::<u64>().is_ok() {
+        return args.clone();
+    }
+    let mut resolved = args.clone();
+    match get_areas(app.clone()).await {
+        Ok(tree) => {
+            if let Some(id) = find_area_id(&tree, area) {
+                resolved["area"] = json!(id);
+            } else {
+                // Ищем по фразе, оставляя город частью запроса.
+                resolved.as_object_mut().map(|o| o.remove("area"));
+                let text = args["text"].as_str().unwrap_or("").trim();
+                resolved["text"] = json!(if text.is_empty() { area.to_string() } else { format!("{} {}", text, area) });
+            }
+        }
+        Err(_) => {
+            resolved.as_object_mut().map(|o| o.remove("area"));
+            let text = args["text"].as_str().unwrap_or("").trim();
+            resolved["text"] = json!(if text.is_empty() { area.to_string() } else { format!("{} {}", text, area) });
+        }
+    }
+    resolved
+}
+
 // справочник профобластей hh.ru для фильтра «Профобласть»; кэшируется
 fn roles_cache() -> &'static std::sync::Mutex<Option<serde_json::Value>> {
     static CACHE: std::sync::LazyLock<std::sync::Mutex<Option<serde_json::Value>>> =
@@ -2144,9 +2211,8 @@ fn trackings_save(app: tauri::AppHandle, data: serde_json::Value) -> Result<(), 
 
 // инструмент агента: тот же поиск, но человекочитаемым списком
 async fn tool_search_vacancies(app: &tauri::AppHandle, args: &serde_json::Value) -> Result<String, String> {
-    let params = build_vacancy_query(args);
-
-    let data = hh_get(app, &format!("/vacancies?{}", params)).await?;
+    let resolved_args = resolve_vacancy_area(app, args).await;
+    let data = vacancies_search_internal(app, &resolved_args).await?;
     let total = data["found"].as_u64().unwrap_or(0);
     let items: Vec<String> = data["items"]
         .as_array()
@@ -2188,7 +2254,7 @@ async fn tool_search_vacancies(app: &tauri::AppHandle, args: &serde_json::Value)
         })
         .collect();
     if items.is_empty() {
-        return Ok(format!("Вакансий не найдено (запрос: {}).", params));
+        return Ok(format!("Вакансий не найдено (запрос: {}).", build_vacancy_query(&resolved_args)));
     }
     Ok(format!(
         "Найдено вакансий: {}. Показаны {} (страница {}).\n\n{}",
@@ -2395,20 +2461,32 @@ async fn tool_render_page(app: &tauri::AppHandle, args: &serde_json::Value) -> R
         .ok_or("нет корректного параметра url")?
         .to_string();
 
-    if let Some(w) = app.get_webview_window("reader") {
-        let _ = w.close();
-    }
     let (tx, rx) = std::sync::mpsc::channel::<Result<String, String>>();
     let script = r#"(function(){
-  function send() {
+  var started = Date.now();
+  var best = '';
+  function send(force) {
     var t = document.body ? document.body.innerText : '';
+    if (t.length > best.length) best = t;
+    // hh.ru может сначала показать оболочку, а список вакансий загрузить
+    // отдельным запросом. Подождём содержимое, но не дольше 20 секунд.
+    if (!force && Date.now() - started < 20000 && t.length < 500) return;
     location.href = 'hhbotresult://r/' + encodeURIComponent(JSON.stringify({
       title: document.title || '',
-      text: t.slice(0, 15000)
+      text: (t.length >= best.length ? t : best).slice(0, 15000)
     }));
   }
-  // дать SPA немного дорисоваться после загрузки
-  setTimeout(send, 1500);
+  var timer = setInterval(function(){
+    if (document.readyState === 'complete' && document.body && document.body.innerText.trim().length >= 500) {
+      clearInterval(timer);
+      send(false);
+    } else if (Date.now() - started >= 20000) {
+      clearInterval(timer);
+      send(true);
+    } else if (document.body && document.body.innerText.length > best.length) {
+      best = document.body.innerText;
+    }
+  }, 500);
 })();"#
         .to_string();
 
@@ -2416,9 +2494,10 @@ async fn tool_render_page(app: &tauri::AppHandle, args: &serde_json::Value) -> R
         .parse()
         .map_err(|e| format!("некорректный URL: {}", e))?;
     let tx_nav = tx.clone();
+    let window_label = format!("reader-{}", uuid_like_id());
     let builder = tauri::WebviewWindowBuilder::new(
         app,
-        "reader",
+        &window_label,
         tauri::WebviewUrl::External(parsed),
     )
     .title("Чтение страницы")
@@ -2448,17 +2527,24 @@ async fn tool_render_page(app: &tauri::AppHandle, args: &serde_json::Value) -> R
         .map_err(|e| format!("Не удалось открыть окно чтения: {}", e))?;
 
     let outcome = tauri::async_runtime::spawn_blocking(move || {
-        rx.recv_timeout(std::time::Duration::from_secs(45))
+        rx.recv_timeout(std::time::Duration::from_secs(30))
     })
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| e.to_string());
 
-    if let Some(w) = app.get_webview_window("reader") {
+    if let Some(w) = app.get_webview_window(&window_label) {
         let _ = w.close();
     }
+    let outcome = outcome?;
     let content = match outcome {
-        Ok(r) => r?,
-        Err(_) => return Err("Страница не загрузилась вовремя (45 с) — возможно, она требует входа.".into()),
+        Ok(Ok(r)) => {
+            if r.split_whitespace().count() < 10 && url.contains("hh.ru/") {
+                return Err("Встроенный браузер hh.ru вернул только пустую оболочку страницы. Попробуй web_search или поиск вакансий hh.ru.".into());
+            }
+            r
+        }
+        Ok(Err(e)) => return Err(e),
+        Err(_) => return Err("Страница не загрузилась вовремя (30 с) — возможно, она требует входа или блокирует встроенный браузер.".into()),
     };
     let mut text = content.split_whitespace().collect::<Vec<_>>().join(" ");
     text.truncate(MAX_URL_CHARS);
@@ -2915,9 +3001,14 @@ async fn stream_step(
         .post(format!("{}/responses", base))
         .bearer_auth(api_key.trim())
         .json(&body)
+        .timeout(std::time::Duration::from_secs(PROVIDER_REQUEST_TIMEOUT_SECS))
         .send()
         .await
-        .map_err(|e| format!("Не удалось подключиться к провайдеру: {}", e))?;
+        .map_err(|e| if e.is_timeout() {
+            format!("Провайдер не ответил за {} с", PROVIDER_REQUEST_TIMEOUT_SECS)
+        } else {
+            format!("Не удалось подключиться к провайдеру: {}", e)
+        })?;
 
     if !resp.status().is_success() {
         let status = resp.status();
@@ -2948,6 +3039,10 @@ async fn stream_step(
     let mut final_calls: Option<Vec<serde_json::Value>> = None;
 
     let mut buf = String::new();
+    let mut stream_ended = false;
+    let mut saw_terminal_event = false;
+    let stream_deadline = tokio::time::Instant::now()
+        + std::time::Duration::from_secs(PROVIDER_REQUEST_TIMEOUT_SECS);
     loop {
         if cancelled.load(Ordering::Relaxed) {
             return Err("__cancelled__".into());
@@ -2956,6 +3051,9 @@ async fn stream_step(
         // опрашиваем флаг каждые 100 мс параллельно с чтением
         let chunk = tokio::select! {
             c = resp.chunk() => c.map_err(|e| format!("Ошибка потока: {}", e))?,
+            _ = tokio::time::sleep_until(stream_deadline) => {
+                return Err(format!("Провайдер не завершил ответ за {} с", PROVIDER_REQUEST_TIMEOUT_SECS));
+            }
             _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
                 if cancelled.load(Ordering::Relaxed) {
                     return Err("__cancelled__".into());
@@ -2963,19 +3061,17 @@ async fn stream_step(
                 continue;
             }
         };
-        let Some(chunk) = chunk else {
-            break;
-        };
-        buf.push_str(&String::from_utf8_lossy(&chunk));
+        match chunk {
+            Some(chunk) => buf.push_str(&String::from_utf8_lossy(&chunk)),
+            None => stream_ended = true,
+        }
         // обрабатываем полные строки
-        while let Some(pos) = buf.find('\n') {
+        while let Some(pos) = buf.find('\n').or_else(|| stream_ended.then_some(buf.len()).filter(|_| !buf.is_empty())) {
             let line = buf[..pos].trim_end().to_string();
-            buf.drain(..pos + 1);
+            buf.drain(..(pos + usize::from(buf.as_bytes().get(pos) == Some(&b'\n'))));
             let Some(data) = line.strip_prefix("data:") else { continue };
             let data = data.trim();
-            if data.is_empty() || data == "[DONE]" {
-                continue;
-            }
+            if data.is_empty() || data == "[DONE]" { continue; }
             let Ok(v) = serde_json::from_str::<serde_json::Value>(data) else { continue };
             let event_type = v["type"].as_str().unwrap_or("");
             match event_type {
@@ -2983,51 +3079,34 @@ async fn stream_step(
                     if let Some(c) = v["delta"].as_str() {
                         if !c.is_empty() {
                             raw.push_str(c);
-                            // разметку DSML из дельт убираем: пользователь
-                            // должен видеть только «чистый» текст
                             let (chunk, new_emitted) = flush_clean_text(&raw, emitted);
-                            if !chunk.is_empty() {
-                                content.push_str(&chunk);
-                                on_delta(&chunk);
-                            }
+                            if !chunk.is_empty() { content.push_str(&chunk); on_delta(&chunk); }
                             emitted = new_emitted;
                         }
                     }
                 }
-                // «думающие» модели: полные размышления и их краткая сводка
                 "response.reasoning_text.delta" | "response.reasoning_summary_text.delta" => {
-                    if let Some(c) = v["delta"].as_str() {
-                        if !c.is_empty() {
-                            on_reasoning(c);
-                        }
-                    }
+                    if let Some(c) = v["delta"].as_str() { if !c.is_empty() { on_reasoning(c); } }
                 }
                 "response.output_item.added" => {
                     let item = &v["item"];
                     if item["type"] == "function_call" {
                         let item_id = item["id"].as_str().unwrap_or("").to_string();
-                        pending.push((
-                            item_id.clone(),
-                            PendingCall {
-                                call_id: item["call_id"].as_str().unwrap_or(&item_id).to_string(),
-                                name: item["name"].as_str().unwrap_or("").to_string(),
-                                args: item["arguments"].as_str().unwrap_or("").to_string(),
-                            },
-                        ));
+                        pending.push((item_id.clone(), PendingCall {
+                            call_id: item["call_id"].as_str().unwrap_or(&item_id).to_string(),
+                            name: item["name"].as_str().unwrap_or("").to_string(),
+                            args: item["arguments"].as_str().unwrap_or("").to_string(),
+                        }));
                     }
                 }
                 "response.function_call_arguments.delta" => {
                     let item_id = v["item_id"].as_str().unwrap_or("");
                     if let Some(d) = v["delta"].as_str() {
-                        if let Some((_, call)) = pending.iter_mut().rev().find(|(id, _)| id == item_id) {
-                            call.args.push_str(d);
-                        } else if let Some((_, call)) = pending.last_mut() {
-                            call.args.push_str(d);
-                        }
+                        if let Some((_, call)) = pending.iter_mut().rev().find(|(id, _)| id == item_id) { call.args.push_str(d); }
+                        else if let Some((_, call)) = pending.last_mut() { call.args.push_str(d); }
                     }
                 }
                 "response.output_item.done" => {
-                    // финальные аргументы вызова (перекрывают накопленные дельты)
                     let item = &v["item"];
                     if item["type"] == "function_call" {
                         let item_id = item["id"].as_str().unwrap_or("").to_string();
@@ -3035,44 +3114,35 @@ async fn stream_step(
                         let name = item["name"].as_str().unwrap_or("").to_string();
                         let args = item["arguments"].as_str().unwrap_or("").to_string();
                         if let Some((_, call)) = pending.iter_mut().rev().find(|(id, _)| *id == item_id) {
-                            call.call_id = call_id;
-                            call.name = name;
-                            call.args = args;
-                        } else {
-                            pending.push((item_id, PendingCall { call_id, name, args }));
-                        }
+                            call.call_id = call_id; call.name = name; call.args = args;
+                        } else { pending.push((item_id, PendingCall { call_id, name, args })); }
                     }
                 }
                 "response.completed" | "response.incomplete" => {
+                    saw_terminal_event = true;
                     let output = &v["response"]["output"];
                     if let Some(items) = output.as_array() {
-                        let calls: Vec<serde_json::Value> = items
-                            .iter()
-                            .filter(|it| it["type"] == "function_call")
-                            .map(|it| {
-                                let item_id = it["id"].as_str().unwrap_or("");
-                                serde_json::json!({
-                                    "call_id": it["call_id"].as_str().unwrap_or(item_id),
-                                    "name": it["name"],
-                                    "arguments": it["arguments"].as_str().unwrap_or(""),
-                                })
-                            })
-                            .collect();
-                        final_calls = Some(calls);
+                        final_calls = Some(items.iter().filter(|it| it["type"] == "function_call").map(|it| {
+                            let item_id = it["id"].as_str().unwrap_or("");
+                            serde_json::json!({ "call_id": it["call_id"].as_str().unwrap_or(item_id), "name": it["name"], "arguments": it["arguments"].as_str().unwrap_or("") })
+                        }).collect());
                     }
                 }
                 "response.failed" | "error" | "response.error" => {
-                    let msg = v["response"]["status_details"]["error"]["message"]
-                        .as_str()
+                    let msg = v["response"]["status_details"]["error"]["message"].as_str()
                         .or_else(|| v["response"]["error"]["message"].as_str())
-                        .or_else(|| v["message"].as_str())
-                        .or_else(|| v["error"]["message"].as_str())
+                        .or_else(|| v["message"].as_str()).or_else(|| v["error"]["message"].as_str())
                         .unwrap_or("неизвестная ошибка провайдера");
                     return Err(format!("Провайдер: {}", msg));
                 }
                 _ => {}
             }
         }
+        if stream_ended { break; }
+    }
+
+    if !saw_terminal_event && content.trim().is_empty() && pending.is_empty() {
+        return Err("Провайдер закрыл поток до завершения ответа".into());
     }
 
     let mut function_calls = final_calls
@@ -3222,7 +3292,7 @@ async fn chat_run(
     let history: Vec<serde_json::Value> = conv
         .messages
         .iter()
-        .filter(|m| (m.role == "user" || m.role == "assistant") && !m.content.trim().is_empty())
+        .filter(|m| (m.role == "user" || m.role == "assistant") && !m.content.trim().is_empty() && m.error.is_none())
         .map(|m| serde_json::json!({ "role": m.role, "content": m.content }))
         .collect::<Vec<_>>()
         .into_iter()
@@ -3237,6 +3307,7 @@ async fn chat_run(
         role: "user".into(),
         content: message.to_string(),
         parts: None,
+        error: None,
         tool_calls: None,
         tool_call_id: None,
     });
@@ -3338,11 +3409,40 @@ async fn chat_run(
         }
     }
 
+    let mut last_tool_calls_sig = String::new();
+    let mut consecutive_tool_repeats = 0usize;
+    let mut is_stuck_in_loop = false;
+
     let run_result: Result<(), String> = loop {
-        if parts_log.lock().expect("mutex").iter().filter(|p| p["kind"] == "tool").count()
-            >= MAX_TOOL_STEPS
-        {
-            break Ok(()); // лимит шагов — отвечаем тем, что накоплено
+        let total_tools = parts_log
+            .lock()
+            .expect("mutex")
+            .iter()
+            .filter(|p| p["kind"] == "tool")
+            .count();
+        if total_tools >= MAX_TOOL_STEPS || is_stuck_in_loop {
+            // Лимит шагов исчерпан или обнаружено зацикливание — отключаем инструменты
+            // и делаем финальный запрос к модели, чтобы она сформулировала законченный ответ.
+            let empty_tools = json!([]);
+            input.push(to_user_item(
+                "Шаги выполнения завершены. Пожалуйста, сформулируй итоговый, полезный ответ для пользователя на основе всей полученной выше информации. Не пытайся вызывать инструменты."
+            ));
+            let final_step = stream_step(
+                base, api_key, model, &instructions, &input, &empty_tools, cancelled,
+                &|c| {
+                    close_thinking(&parts_log, &thinking_started);
+                    push_delta(&parts_log, "text", c, &thinking_started);
+                    let _ = on_event.send(serde_json::json!({ "type": "delta", "content": c }));
+                },
+                &|c| {
+                    push_delta(&parts_log, "thinking", c, &thinking_started);
+                    let _ = on_event.send(serde_json::json!({ "type": "reasoning", "content": c }));
+                },
+            ).await;
+            if let Ok(fs) = final_step {
+                final_answer = fs.content;
+            }
+            break Ok(());
         }
         if cancelled.load(Ordering::Relaxed) {
             break Err("__cancelled__".into());
@@ -3370,6 +3470,13 @@ async fn chat_run(
                 },
             ).await;
             match result {
+                Ok(value) if value.content.trim().is_empty()
+                    && value.function_calls.is_empty()
+                    && attempt < 2
+                    && !emitted.load(Ordering::Relaxed) => {
+                    attempt += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(400 * attempt)).await;
+                }
                 Ok(value) => break Ok(value),
                 Err(err) if err != "__cancelled__" && attempt < 2
                     && !emitted.load(Ordering::Relaxed) => {
@@ -3391,8 +3498,50 @@ async fn chat_run(
         close_thinking(&parts_log, &thinking_started);
 
         if !result.function_calls.is_empty() {
-            // текст перед вызовами инструментов уже отдан дельтами; в input
-            // ничего не добавляем — ответы уходят как function_call_output
+            // Если модель выдала промежуточный текст перед вызовом инструментов (статус или реплику),
+            // сохраняем его в input как ответ ассистента, чтобы модель помнила свои слова на следующем шаге
+            let intermediate_text = result.content.trim();
+            if !intermediate_text.is_empty() {
+                input.push(to_assistant_item(intermediate_text));
+            }
+
+            // Добавляем вызовы функций ассистента в input для Responses API
+            for call in &result.function_calls {
+                let name = call["name"].as_str().unwrap_or("?").to_string();
+                let args_s = call["arguments"].as_str().unwrap_or("{}").to_string();
+                let call_id = call["call_id"].as_str().unwrap_or("call").to_string();
+                input.push(serde_json::json!({
+                    "type": "function_call",
+                    "call_id": call_id,
+                    "name": name,
+                    "arguments": args_s,
+                }));
+            }
+
+            // Детектор зацикливания: если модель 3 раза подряд вызывает ровно те же инструменты с теми же параметрами
+            let current_sig = result
+                .function_calls
+                .iter()
+                .map(|c| {
+                    format!(
+                        "{}:{}",
+                        c["name"].as_str().unwrap_or(""),
+                        c["arguments"].as_str().unwrap_or("")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("|");
+
+            if !current_sig.is_empty() && current_sig == last_tool_calls_sig {
+                consecutive_tool_repeats += 1;
+                if consecutive_tool_repeats >= 2 {
+                    is_stuck_in_loop = true;
+                }
+            } else {
+                last_tool_calls_sig = current_sig;
+                consecutive_tool_repeats = 0;
+            }
+
             for call in &result.function_calls {
                 let name = call["name"].as_str().unwrap_or("?").to_string();
                 let args_s = call["arguments"].as_str().unwrap_or("{}").to_string();
@@ -3468,7 +3617,16 @@ async fn chat_run(
                 // «Стоп» должен обрывать работающий инструмент мгновенно:
                 // ожидание отмены выбрасывает run_tool вместе с его сетевым запросом
                 let output = tokio::select! {
-                    r = run_tool(app, &name, &args, search_url, on_event) => r,
+                    r = tokio::time::timeout(
+                        std::time::Duration::from_secs(TOOL_TIMEOUT_SECS),
+                        run_tool(app, &name, &args, search_url, on_event),
+                    ) => match r {
+                        Ok(output) => output,
+                        Err(_) => format!(
+                            "Ошибка инструмента: превышено время ожидания ({} с). Попробуй другой способ или повтори позже.",
+                            TOOL_TIMEOUT_SECS
+                        ),
+                    },
                     _ = async {
                         loop {
                             if cancelled.load(Ordering::Relaxed) {
@@ -3517,11 +3675,37 @@ async fn chat_run(
 
     let cancelled_run = matches!(&run_result, Err(e) if e == "__cancelled__");
 
-    // финальный ответ — только из последнего шага. Текст, который модель
-    // уже прислала дельтами в предыдущих шагах (например, перед вызовами
-    // инструментов), терять нельзя: если последний шаг текста не дал,
-    // собираем ответ из всего накопленного стрима
-    if final_answer.is_empty() {
+    // Если финальный ответ остался пустым после инструментов, даём модели финальный шанс синтезировать ответ
+    if final_answer.trim().is_empty() && !cancelled_run && run_result.is_ok() {
+        let had_tools = parts_log
+            .lock()
+            .expect("mutex")
+            .iter()
+            .any(|p| p["kind"] == "tool");
+        if had_tools {
+            let empty_tools = json!([]);
+            input.push(to_user_item(
+                "Все действия выполнены. Напиши итоговый ответ для пользователя."
+            ));
+            let synth_step = stream_step(
+                base, api_key, model, &instructions, &input, &empty_tools, cancelled,
+                &|c| {
+                    close_thinking(&parts_log, &thinking_started);
+                    push_delta(&parts_log, "text", c, &thinking_started);
+                    let _ = on_event.send(serde_json::json!({ "type": "delta", "content": c }));
+                },
+                &|c| {
+                    push_delta(&parts_log, "thinking", c, &thinking_started);
+                    let _ = on_event.send(serde_json::json!({ "type": "reasoning", "content": c }));
+                },
+            ).await;
+            if let Ok(ss) = synth_step {
+                final_answer = ss.content;
+            }
+        }
+    }
+
+    if final_answer.trim().is_empty() {
         let streamed: String = parts_log
             .lock()
             .expect("mutex")
@@ -3529,9 +3713,14 @@ async fn chat_run(
             .filter(|p| p["kind"] == "text" && p["text"].is_string())
             .filter_map(|p| p["text"].as_str())
             .collect::<Vec<_>>()
-            .join("");
+            .join("\n\n");
         if !streamed.trim().is_empty() {
             final_answer = streamed;
+        } else if !cancelled_run && run_result.is_ok() {
+            let fallback = "Действия выполнены.".to_string();
+            push_delta(&parts_log, "text", &fallback, &thinking_started);
+            let _ = on_event.send(serde_json::json!({ "type": "delta", "content": fallback }));
+            final_answer = fallback;
         }
     }
     // настоящая ошибка провайдера важнее: показываем её, только если
@@ -3541,8 +3730,12 @@ async fn chat_run(
             final_answer = format!("Не удалось получить ответ: {}", e);
         }
     }
-    if final_answer.trim().is_empty() && !cancelled_run {
-        return Err("Модель не вернула ответ".into());
+    let persisted_error = match &run_result {
+        Err(e) if e != "__cancelled__" => Some(e.clone()),
+        _ => None,
+    };
+    if final_answer.trim().is_empty() && cancelled_run {
+        final_answer = "_Остановлено._".into();
     }
 
     close_thinking(&parts_log, &thinking_started);
@@ -3558,6 +3751,7 @@ async fn chat_run(
                 role: "assistant".into(),
                 content: final_answer,
                 parts: Some(json!(parts)),
+                error: persisted_error.clone(),
                 tool_calls: None,
                 tool_call_id: None,
             });
@@ -3567,6 +3761,9 @@ async fn chat_run(
 
     match run_result {
         Ok(()) => {
+            if let Some(error) = persisted_error {
+                return Err(error);
+            }
             let _ = on_event.send(serde_json::json!({ "type": "done" }));
             Ok(())
         }

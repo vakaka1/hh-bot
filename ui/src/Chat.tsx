@@ -52,14 +52,21 @@ function toolLabel(name: string, args?: Record<string, unknown>): string {
     const u = args?.url as string | undefined;
     return u ? `Читает: ${u}` : "Читает страницу";
   }
-  if (name === "list_resumes") return "Смотрит резюме на hh.ru";
-  if (name === "read_resume") return "Читает резюме на hh.ru";
-  if (name === "search_vacancies") return "Ищет вакансии на hh.ru";
+  if (name === "current_datetime") return "Проверяет дату и время";
+  if (name === "list_resumes") return "Смотрит ваши резюме";
+  if (name === "read_resume") return "Читает резюме";
+  if (name === "search_vacancies") return "Ищет вакансии через приложение";
   if (name === "list_trackings") return "Смотрит отслеживания вакансий";
   if (name === "create_tracking") return "Создаёт отслеживание вакансий";
+  if (name === "update_tracking") return "Изменяет отслеживание вакансий";
   if (name === "delete_tracking") return "Удаляет отслеживание вакансий";
   if (name === "read_profile") return "Читает ваш профиль";
   if (name === "prepare_resume_texts") return "Готовит тексты для резюме";
+  if (name === "render_page") return "Открывает и читает страницу";
+  if (name === "list_chats") return "Смотрит переписки с работодателями";
+  if (name === "read_chat") return "Читает переписку с работодателем";
+  if (name === "send_chat_message") return "Пишет работодателю";
+  if (name === "fetch_url") return "Читает страницу";
   if (name === "set_theme") {
     const t = args?.theme as string | undefined;
     return t === "dark" ? "Включает тёмную тему" : t === "light" ? "Включает светлую тему" : t === "system" ? "Ставит системную тему" : "Меняет тему";
@@ -75,7 +82,7 @@ function toolLabel(name: string, args?: Record<string, unknown>): string {
   if (name === "unpublish_resume") return "Снимает резюме с публикации";
   if (name === "publish_resume") return "Публикует резюме";
   if (name === "edit_resume") return "Открывает редактирование резюме";
-  return name;
+  return `Выполняет действие: ${name.replaceAll("_", " ")}`;
 }
 
 function thoughtTail(text: string, wordLimit = 12): string {
@@ -115,6 +122,10 @@ function toolIcon(name: string) {
   if (name === "set_theme") return Palette;
   if (name.startsWith("delete")) return Trash2;
   if (name === "current_datetime") return CalendarClock;
+  if (name === "fetch_url") return Globe;
+  if (name === "render_page") return LayoutPanelTop;
+  if (name === "list_chats" || name === "read_chat") return MessageSquareText;
+  if (name === "send_chat_message") return Send;
   return Wrench;
 }
 
@@ -279,7 +290,7 @@ export default function Chat({
       .chatGet(id)
       .then((msgs) => {
         if (activeChatIdRef.current !== id) return;
-        const restored = msgs.map((m) => ({ role: m.role, parts: restoreParts(m) }));
+        const restored = msgs.map((m) => ({ role: m.role, parts: restoreParts(m), error: m.error }));
         const live = entriesByChatRef.current.get(id);
         const merged = live?.some((entry) => entry.streaming) ? live : restored;
         entriesByChatRef.current.set(id, merged);
