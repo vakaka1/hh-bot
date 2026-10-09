@@ -3,11 +3,11 @@ import { api, AgentStore, AgentMode, AGENT_MODES, ChatEvent, ChatSummary, ModelE
 import ModelSelect from "./ModelSelect";
 import Markdown from "./Markdown";
 import {
-  BookmarkCheck, BookmarkPlus, BookmarkX, BriefcaseBusiness, BrainCircuit, ChevronDown,
-  CalendarClock, CircleUserRound, FileCheck, FileSearch, FileText, Files,
-  FileX, Globe, LayoutPanelTop, ListChecks,
-  MessageSquareText, Navigation, Palette, Pencil, Search, Send, Trash2,
-  UserRoundPen, Wrench,
+  BookmarkCheck, BookmarkPlus, BookmarkX, BriefcaseBusiness, BrainCircuit, Check, ChevronDown,
+  CalendarClock, CircleUserRound, Copy, FileCheck, FileSearch, FileText, Files,
+  FileX, Globe, LayoutPanelTop, ListChecks, MessageSquare,
+  MessageSquareText, Navigation, Palette, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Search, Send, ShieldCheck, Trash2,
+  UserRoundPen, Wrench, Zap,
 } from "lucide-react";
 
 // Хронологические сегменты ответа агента: текст, размышления и вызовы
@@ -167,6 +167,12 @@ function newChatId(): string {
     : `chat-${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
 }
 
+function getModeIcon(m: AgentMode) {
+  if (m === "chat") return MessageSquare;
+  if (m === "confirm") return ShieldCheck;
+  return Zap;
+}
+
 // ---------------------------------------------------------------- чат
 
 export default function Chat({
@@ -191,6 +197,28 @@ export default function Chat({
   const [chatModel, setChatModel] = useState(
     () => localStorage.getItem("chat_model") || ""
   );
+  const [sidebarOpen, setSidebarOpen] = useState(
+    () => localStorage.getItem("chat_sidebar_open") !== "false"
+  );
+  const [modeMenuOpen, setModeMenuOpen] = useState(false);
+  const [isMultiline, setIsMultiline] = useState(false);
+  const modeMenuRef = useRef<HTMLDivElement>(null);
+
+  function toggleSidebar(open: boolean) {
+    setSidebarOpen(open);
+    localStorage.setItem("chat_sidebar_open", String(open));
+  }
+
+  useEffect(() => {
+    if (!modeMenuOpen) return;
+    function onDoc(e: MouseEvent) {
+      if (modeMenuRef.current && !modeMenuRef.current.contains(e.target as Node)) {
+        setModeMenuOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [modeMenuOpen]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickBottomRef = useRef(true);
@@ -522,52 +550,185 @@ export default function Chat({
     localStorage.setItem("chat_model", m);
   }
 
-  // пересчёт высоты поля ввода
+  // пересчёт высоты поля ввода и отслеживание многострочности
+  useLayoutEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    if (text.includes("\n")) {
+      setIsMultiline(true);
+    } else {
+      el.style.height = "auto";
+      setIsMultiline(el.scrollHeight > 38);
+    }
+  }, [text]);
+
   useLayoutEffect(() => {
     const el = inputRef.current;
     if (!el) return;
     el.style.height = "auto";
-    const needed = el.scrollHeight + 2;
-    el.style.height = Math.min(needed, 220) + "px";
-    el.style.overflowY = needed > 220 ? "auto" : "hidden";
-  }, [text]);
+    const needed = el.scrollHeight;
+    const maxHeight = 220;
+    el.style.height = Math.min(needed, maxHeight) + "px";
+    el.style.overflowY = needed > maxHeight ? "auto" : "hidden";
+  }, [text, isMultiline]);
 
   const empty = entries.length === 0;
+  const currentChat = chats.find((c) => c.id === currentId);
+  const currentModeInfo = AGENT_MODES.find((m) => m.id === mode) || AGENT_MODES[0];
+  const CurrentModeIcon = getModeIcon(mode);
+
+  const modeSelector = (
+    <div className="composer-mode-wrap" ref={modeMenuRef}>
+      <button
+        type="button"
+        className={"composer-mode-btn" + (modeMenuOpen ? " open" : "")}
+        onClick={() => setModeMenuOpen((o) => !o)}
+        title={currentModeInfo.hint}
+        aria-expanded={modeMenuOpen}
+      >
+        <CurrentModeIcon size={15} />
+        <span>{currentModeInfo.label}</span>
+        <ChevronDown size={13} className={"composer-mode-chevron" + (modeMenuOpen ? " open" : "")} />
+      </button>
+      {modeMenuOpen && (
+        <div className="composer-mode-menu">
+          <div className="composer-mode-menu-header">Режим агента</div>
+          {AGENT_MODES.map((m) => {
+            const Icon = getModeIcon(m.id);
+            const isSel = mode === m.id;
+            return (
+              <button
+                key={m.id}
+                type="button"
+                className={"composer-mode-item" + (isSel ? " active" : "")}
+                onClick={() => {
+                  onMode(m.id);
+                  setModeMenuOpen(false);
+                }}
+              >
+                <div className="composer-mode-item-icon">
+                  <Icon size={16} />
+                </div>
+                <div className="composer-mode-item-info">
+                  <div className="composer-mode-item-title">{m.label}</div>
+                  <div className="composer-mode-item-desc">{m.hint}</div>
+                </div>
+                {isSel && <Check size={16} className="composer-mode-check" />}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+
+  const composerRight = (
+    <div className="chat-composer-right">
+      {modelEntries.length > 0 && (
+        <ModelSelect
+          value={chatModel}
+          options={modelEntries.map((e) => e.value)}
+          onChange={pickModel}
+          dropUp
+          title="Модель для чата"
+          label={(v) => modelEntries.find((x) => x.value === v)?.model || v}
+        />
+      )}
+
+      {streaming ? (
+        <button className="send-btn stop" onClick={stop} title="Остановить генерацию">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <rect x="6" y="6" width="12" height="12" rx="2" />
+          </svg>
+        </button>
+      ) : (
+        <button
+          className="send-btn"
+          onClick={send}
+          disabled={!text.trim()}
+          title="Отправить (Enter)"
+        >
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M12 20V5M12 5l-6 6M12 5l6 6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
+      )}
+    </div>
+  );
 
   return (
     <div className="chat-layout">
-      <aside className="chat-sidebar">
-        <button className="new-chat-btn" onClick={newChat}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
-          </svg>
-          Новый чат
-        </button>
-        <div className="sidebar-title">История</div>
-        {chats.map((c) => (
-          <div
-            key={c.id}
-            className={"chat-item" + (c.id === currentId ? " current" : "")}
-            onClick={() => openChat(c.id)}
-            title={c.title}
-          >
-            {runningChatIds.has(c.id) && <span className="chat-item-live" role="img" aria-label="Агент работает" />}
-            <span className="chat-item-label">{c.title}</span>
+      <aside className={"chat-sidebar" + (!sidebarOpen ? " collapsed" : "")}>
+        <div className="sidebar-inner">
+          <div className="sidebar-header">
+            <span className="sidebar-header-title">Задачи</span>
             <button
-              className="chat-item-del"
-              title="Удалить чат"
-              onClick={(e) => deleteChat(c.id, e)}
+              className="sidebar-collapse-btn"
+              onClick={() => toggleSidebar(false)}
+              title="Свернуть панель"
+              aria-label="Свернуть панель"
             >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
-              </svg>
+              <PanelLeftClose size={17} />
             </button>
           </div>
-        ))}
-        {chats.length === 0 && <p className="sidebar-empty">Пока пусто</p>}
+          <button className="new-task-btn" onClick={newChat}>
+            <Plus size={16} />
+            <span>Новая задача</span>
+          </button>
+          <div className="sidebar-title">История задач</div>
+          {chats.map((c) => (
+            <div
+              key={c.id}
+              className={"chat-item" + (c.id === currentId ? " current" : "")}
+              onClick={() => openChat(c.id)}
+              title={c.title}
+            >
+              {runningChatIds.has(c.id) && <span className="chat-item-live" role="img" aria-label="Агент работает" />}
+              <span className="chat-item-label">{c.title}</span>
+              <button
+                className="chat-item-del"
+                title="Удалить задачу"
+                onClick={(e) => deleteChat(c.id, e)}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+                </svg>
+              </button>
+            </div>
+          ))}
+          {chats.length === 0 && <p className="sidebar-empty">Пока пусто</p>}
+        </div>
       </aside>
 
       <div className="chat-main">
+        <div className="chat-topbar">
+          <div className="chat-topbar-left">
+            {!sidebarOpen && (
+              <button
+                className="sidebar-toggle-btn"
+                onClick={() => toggleSidebar(true)}
+                title="Развернуть панель задач"
+                aria-label="Развернуть панель задач"
+              >
+                <PanelLeftOpen size={17} />
+              </button>
+            )}
+            {!sidebarOpen && (
+              <button
+                className="topbar-new-task-btn"
+                onClick={newChat}
+                title="Новая задача"
+              >
+                <Plus size={14} />
+                <span>Новая задача</span>
+              </button>
+            )}
+            <span className="chat-topbar-title">
+              {currentChat ? currentChat.title : (entries.length > 0 ? "Текущая задача" : "Новая задача")}
+            </span>
+          </div>
+        </div>
+
         {empty ? (
           <div className="chat-hero">
             <div className="chat-title">
@@ -610,59 +771,48 @@ export default function Chat({
         )}
 
         <div className="chat-composer-wrap">
-          <div className="chat-composer">
-          <textarea
-            ref={inputRef}
-            className="chat-textarea"
-            rows={1}
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                send();
-              }
-            }}
-            placeholder="Напишите сообщение…"
-          />
-          {modelEntries.length > 0 && (
-            <ModelSelect
-              value={chatModel}
-              options={modelEntries.map((e) => e.value)}
-              onChange={pickModel}
-              dropUp
-              title="Модель для чата"
-              label={(v) => modelEntries.find((x) => x.value === v)?.model || v}
-            />
-          )}
-
-          {streaming ? (
-            <button className="send-btn stop" onClick={stop} title="Остановить">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                <rect x="6" y="6" width="12" height="12" rx="2" />
-              </svg>
-            </button>
-          ) : (
-            <button
-              className="send-btn"
-              onClick={send}
-              disabled={!text.trim()}
-              title="Отправить"
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                <path d="M12 20V5M12 5l-6 6M12 5l6 6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-            </button>
-          )}
-          </div>
-          <div className="chat-mode-row">
-            <span className="mode-caption">Режим агента</span>
-            <div className="segmented small" title="Права агента в приложении">
-              {AGENT_MODES.map((m) => (
-                <button key={m.id} className={"seg" + (mode === m.id ? " active" : "")} onClick={() => onMode(m.id)} disabled={streaming} title={m.hint}>{m.label}</button>
-              ))}
-            </div>
-            {mode !== "chat" && <span className={"mode-hint" + (mode === "full" ? " warn" : "")}>{mode === "confirm" ? "Действия после подтверждения" : "Действия без подтверждения"}</span>}
+          <div className={"chat-composer" + (isMultiline ? " multiline" : "")}>
+            {!isMultiline ? (
+              <>
+                {modeSelector}
+                <textarea
+                  ref={inputRef}
+                  className="chat-textarea"
+                  rows={1}
+                  value={text}
+                  onChange={(e) => setText(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      send();
+                    }
+                  }}
+                  placeholder="Напишите сообщение… (Enter — отправить, Shift+Enter — перенос)"
+                />
+                {composerRight}
+              </>
+            ) : (
+              <>
+                <textarea
+                  ref={inputRef}
+                  className="chat-textarea"
+                  rows={2}
+                  value={text}
+                  onChange={(e) => setText(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      send();
+                    }
+                  }}
+                  placeholder="Напишите сообщение… (Enter — отправить, Shift+Enter — перенос)"
+                />
+                <div className="chat-composer-footer">
+                  {modeSelector}
+                  {composerRight}
+                </div>
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -762,11 +912,42 @@ function AgentMessage({
   onToggle: () => void;
   onDecide: (c: ConfirmRun, d: "allow" | "allow_always" | "deny") => void;
 }) {
+  const [copied, setCopied] = useState(false);
   const process = m.parts.filter((p) => p.kind !== "text");
   const working = m.streaming;
+  const finalTexts = m.parts.filter((p): p is Extract<Part, { kind: "text" }> => p.kind === "text" && Boolean(p.final));
+  const allFinalText = finalTexts.map((p) => p.text).join("\n\n");
+
+  function copyAnswer() {
+    if (!allFinalText) return;
+    navigator.clipboard.writeText(allFinalText).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }
 
   return (
     <div className="msg-agent">
+      <div className="msg-agent-header">
+        <div className="msg-agent-badge">
+          <BrainCircuit size={15} />
+          <span>HH-bot</span>
+        </div>
+        {allFinalText && !working && (
+          <div className="msg-agent-actions">
+            <button
+              type="button"
+              className="msg-copy-btn"
+              onClick={copyAnswer}
+              title="Скопировать ответ"
+            >
+              {copied ? <Check size={12} /> : <Copy size={12} />}
+              <span>{copied ? "Скопировано" : "Копировать"}</span>
+            </button>
+          </div>
+        )}
+      </div>
+
       {process.length > 0 && (
         <div className={"work-process" + (m.processOpen ? " open" : "")}>
           <button type="button" className="work-process-head" onClick={(event) => {

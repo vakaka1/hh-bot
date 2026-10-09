@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Search, X } from "lucide-react";
 
 // ---------------------------------------------------------------- выбор модели
 
@@ -24,10 +25,15 @@ export default function ModelSelect({
   labelNode?: (m: string) => ReactNode;
 }) {
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
   const rootRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      setQuery("");
+      return;
+    }
     function onDoc(e: MouseEvent) {
       if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
     }
@@ -42,7 +48,22 @@ export default function ModelSelect({
     };
   }, [open]);
 
+  useEffect(() => {
+    if (open && searchInputRef.current) {
+      searchInputRef.current.focus();
+    }
+  }, [open]);
+
   const all = options.includes(value) || !value ? options : [value, ...options];
+  const showSearch = all.length > 6;
+
+  const filtered = query.trim()
+    ? all.filter((m) => {
+        const q = query.toLowerCase();
+        const lbl = label ? label(m).toLowerCase() : "";
+        return m.toLowerCase().includes(q) || lbl.includes(q);
+      })
+    : all;
 
   return (
     <div className={"ms-root" + (wide ? " wide" : "")} ref={rootRef}>
@@ -61,24 +82,58 @@ export default function ModelSelect({
       </button>
       {open && (
         <div className={"ms-menu" + (dropUp ? " up" : "")}>
-          {all.map((m) => (
-            <button
-              type="button"
-              key={m}
-              className={"ms-item" + (m === value ? " selected" : "")}
-              onClick={() => {
-                onChange(m);
-                setOpen(false);
-              }}
-            >
-              <span className="ms-item-label">{labelNode ? labelNode(m) : label ? label(m) : m}</span>
-              {m === value && (
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                  <path d="M5 13l4 4L19 7" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
+          {showSearch && (
+            <div className="ms-search-box" onClick={(e) => e.stopPropagation()}>
+              <Search size={13} className="ms-search-icon" />
+              <input
+                ref={searchInputRef}
+                type="text"
+                className="ms-search-input"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Поиск..."
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    setOpen(false);
+                  }
+                }}
+              />
+              {query && (
+                <button
+                  type="button"
+                  className="ms-search-clear"
+                  onClick={() => setQuery("")}
+                  title="Очистить"
+                >
+                  <X size={12} />
+                </button>
               )}
-            </button>
-          ))}
+            </div>
+          )}
+          <div className="ms-list">
+            {filtered.length > 0 ? (
+              filtered.map((m) => (
+                <button
+                  type="button"
+                  key={m}
+                  className={"ms-item" + (m === value ? " selected" : "")}
+                  onClick={() => {
+                    onChange(m);
+                    setOpen(false);
+                  }}
+                >
+                  <span className="ms-item-label">{labelNode ? labelNode(m) : label ? label(m) : m}</span>
+                  {m === value && (
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                      <path d="M5 13l4 4L19 7" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  )}
+                </button>
+              ))
+            ) : (
+              <div className="ms-empty">Ничего не найдено</div>
+            )}
+          </div>
         </div>
       )}
     </div>

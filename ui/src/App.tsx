@@ -2,13 +2,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { BrainCircuit, Plus, Tag } from "lucide-react";
 import { api, isDemo, AgentConfig, AgentMode, AgentStore, Me, ProfileData, Resume, resumeHidden } from "./api";
-import ModelSelect from "./ModelSelect";
-import type { ModelEntry } from "./api";
-import { loadAllModels } from "./api";
 import Chat from "./Chat";
 import Vacancies from "./Vacancies";
 import Chats from "./Chats";
 import Knowledge from "./Knowledge";
+import ProvidersManager from "./ProvidersManager";
 
 type Screen = "loading" | "login" | "app";
 type Tab = "chat" | "vacancies" | "hhchats" | "knowledge" | "profile" | "settings";
@@ -447,14 +445,12 @@ function Settings({
   setTheme,
   store,
   onOpenProviders,
-  onAgentModel,
   onSearchUrl,
 }: {
   theme: ThemeSetting;
   setTheme: (t: ThemeSetting) => void;
   store: AgentStore;
   onOpenProviders: () => void;
-  onAgentModel: (m: string | null) => void;
   onSearchUrl: (url: string | null) => void;
 }) {
   const active =
@@ -462,28 +458,7 @@ function Settings({
       ? store.providers[store.active]
       : null;
 
-  // общий список моделей всех провайдеров — основную модель агента можно
-  // взять у любого провайдера, а не только у активного
-  const [modelEntries, setModelEntries] = useState<ModelEntry[]>([]);
-  const [modelsErr, setModelsErr] = useState("");
-  const providersSig = JSON.stringify(
-    store.providers.map((p) => [p.base_url, p.api_key, p.ignored_models])
-  );
-
-  useEffect(() => {
-    if (!store.providers.length) return;
-    let cancelled = false;
-    setModelsErr("");
-    loadAllModels(store)
-      .then((list) => !cancelled && setModelEntries(list))
-      .catch((e) => !cancelled && setModelsErr(String(e)));
-    return () => {
-      cancelled = true;
-    };
-  }, [providersSig]);
-
   const agentModel = store.agent_model || active?.model || "";
-  const selectedEntry = modelEntries.find((e) => e.model === agentModel);
 
   return (
     <div className="settings-col">
@@ -493,18 +468,21 @@ function Settings({
         </div>
         <div className="segmented">
           <button
+            type="button"
             className={theme === "system" ? "seg active" : "seg"}
             onClick={() => setTheme("system")}
           >
             Системная
           </button>
           <button
+            type="button"
             className={theme === "light" ? "seg active" : "seg"}
             onClick={() => setTheme("light")}
           >
             Светлая
           </button>
           <button
+            type="button"
             className={theme === "dark" ? "seg active" : "seg"}
             onClick={() => setTheme("dark")}
           >
@@ -515,11 +493,14 @@ function Settings({
 
       <div className="card">
         <div className="card-head">
-          <h2>ИИ-провайдер</h2>
-          <button className="ghost-btn small" onClick={onOpenProviders}>
+          <h2>ИИ-провайдеры и модели</h2>
+          <button type="button" className="ghost-btn small" onClick={onOpenProviders}>
             Настроить
           </button>
         </div>
+        <p className="hint">
+          Подключение к языковым моделям через OpenAI-совместимый API (OpenAI, OpenRouter, Ollama и др.).
+        </p>
         {active ? (
           <>
             <div className="active-provider-row">
@@ -528,28 +509,16 @@ function Settings({
             </div>
             <label>
               Основная модель агента
-              {modelEntries.length > 0 ? (
-                <ModelSelect
-                  value={selectedEntry ? selectedEntry.model : agentModel}
-                  options={modelEntries.map((e) => e.model)}
-                  onChange={(m) => onAgentModel(m || null)}
-                  wide
-                />
-              ) : (
-                <>
-                  <input
-                    value={agentModel}
-                    onChange={(e) => onAgentModel(e.target.value || null)}
-                    placeholder={modelsErr ? "Список недоступен — укажите модель вручную" : "Загрузка…"}
-                  />
-                  {modelsErr && <p className="status err">{modelsErr}</p>}
-                </>
-              )}
+              <input
+                value={agentModel || "Не выбрана"}
+                readOnly
+                style={{ cursor: "default" }}
+              />
             </label>
           </>
         ) : (
-          <p className="hint">
-            Провайдер не выбран. Добавьте OpenAI-совместимый API — он понадобится для чата с агентом.
+          <p className="hint" style={{ marginTop: 14 }}>
+            Провайдер не выбран. Нажмите «Настроить», чтобы добавить API и выбрать активную модель.
           </p>
         )}
       </div>
@@ -670,255 +639,6 @@ function SearchCard({
   );
 }
 
-// ---------------------------------------------------------------- провайдеры
-
-function Providers({
-  onBack,
-  onSaved,
-}: {
-  onBack: () => void;
-  onSaved: (store: AgentStore) => void;
-}) {
-  const [store, setStore] = useState<AgentStore>({ providers: [], active: null });
-  const [status, setStatus] = useState<{ text: string; ok: boolean } | null>(null);
-
-  useEffect(() => {
-    api
-      .agentsLoad()
-      .then(setStore)
-      .catch((e) => setStatus({ text: String(e), ok: false }));
-  }, []);
-
-  function patch(i: number, cfg: AgentConfig) {
-    setStore((s) => ({
-      ...s,
-      providers: s.providers.map((p, j) => (j === i ? cfg : p)),
-    }));
-  }
-
-  function add() {
-    setStore((s) => ({
-      ...s,
-      providers: [...s.providers, { name: "", base_url: "", api_key: "", model: "", rate_limit: 0, ignored_models: [] }],
-      active: s.active === null && s.providers.length === 0 ? 0 : s.active,
-    }));
-  }
-
-  function del(i: number) {
-    setStore((s) => {
-      const providers = s.providers.filter((_, j) => j !== i);
-      let active = s.active;
-      if (active === i) active = null;
-      else if (active !== null && active > i) active -= 1;
-      return { providers, active };
-    });
-  }
-
-  async function save() {
-    try {
-      await api.agentsSave(store);
-      onSaved(store);
-      setStatus({ text: "Настройки сохранены", ok: true });
-    } catch (e) {
-      setStatus({ text: String(e), ok: false });
-    }
-  }
-
-  return (
-    <div className="card wide">
-      <div className="card-head">
-        <div className="row gap">
-          <button className="link-btn back-btn" onClick={onBack}>
-            ← Настройки
-          </button>
-          <h2>ИИ-провайдеры</h2>
-        </div>
-        <button className="btn-primary small" onClick={add}>
-          + Добавить
-        </button>
-      </div>
-      <p className="hint">
-        Несколько OpenAI-совместимых API. Модели считываются с провайдера автоматически;
-        вручную указать можно, если провайдер не отдаёт список. Радиокнопкой отметьте активного.
-      </p>
-      {store.providers.length === 0 && (
-        <p className="hint">Пока не добавлено ни одного провайдера.</p>
-      )}
-      {store.providers.map((p, i) => (
-        <ProviderCard
-          key={i}
-          cfg={p}
-          active={store.active === i}
-          onChange={(cfg) => patch(i, cfg)}
-          onSetActive={() => setStore((s) => ({ ...s, active: i }))}
-          onDelete={() => del(i)}
-        />
-      ))}
-      <div className="row">
-        <button className="btn-primary" onClick={save}>
-          Сохранить
-        </button>
-      </div>
-      {status && <p className={"status " + (status.ok ? "ok" : "err")}>{status.text}</p>}
-    </div>
-  );
-}
-
-function ProviderCard({
-  cfg,
-  active,
-  onChange,
-  onSetActive,
-  onDelete,
-}: {
-  cfg: AgentConfig;
-  active: boolean;
-  onChange: (cfg: AgentConfig) => void;
-  onSetActive: () => void;
-  onDelete: () => void;
-}) {
-  const [models, setModels] = useState<string[]>([]);
-  const [modelsErr, setModelsErr] = useState("");
-  const [loading, setLoading] = useState(false);
-
-  async function fetchModels() {
-    if (!cfg.base_url.trim() || !cfg.api_key.trim()) return;
-    setLoading(true);
-    setModelsErr("");
-    try {
-      const res = await api.agentTest(cfg);
-      setModels(res.models || []);
-      if (!cfg.model && res.models?.length) {
-        onChange({ ...cfg, model: res.models[0] });
-      }
-    } catch (e) {
-      setModels([]);
-      setModelsErr(String(e));
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  // автозагрузка при открытии; далее — по blur полей URL и ключа
-  useEffect(() => {
-    fetchModels();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const set = (k: keyof AgentConfig) => (e: React.ChangeEvent<HTMLInputElement>) =>
-    onChange({ ...cfg, [k]: e.target.value });
-
-  return (
-    <div className={"provider" + (active ? " active-provider" : "")}>
-      <div className="provider-head">
-        <label className="radio">
-          <input
-            type="radio"
-            name="active-provider"
-            checked={active}
-            onChange={onSetActive}
-            title="Сделать активным"
-          />
-          <input
-            className="p-name"
-            value={cfg.name}
-            onChange={set("name")}
-            placeholder="Название (например, OpenAI)"
-          />
-        </label>
-        <button className="link-btn" onClick={onDelete}>
-          Удалить
-        </button>
-      </div>
-      <label>
-        Base URL
-        <input value={cfg.base_url} onChange={set("base_url")} onBlur={fetchModels} placeholder="https://api.openai.com/v1" />
-      </label>
-      <label>
-        API-ключ
-        <input type="password" value={cfg.api_key} onChange={set("api_key")} onBlur={fetchModels} placeholder="sk-..." />
-      </label>
-      <label>
-        Лимит запросов в минуту
-        <input
-          type="number"
-          min={0}
-          value={cfg.rate_limit || 0}
-          onChange={(e) =>
-            onChange({ ...cfg, rate_limit: Math.max(0, Number(e.target.value) || 0) })
-          }
-          placeholder="0 — без лимита"
-        />
-      </label>
-      <p className="hint">
-        Ограничение запросов к этому провайдеру, чтобы не упереться в его лимиты.
-        Например, 30 — не больше 30 запросов в минуту. 0 — без ограничения.
-      </p>
-      {models.length > 0 ? (
-        <div className="ignore-models">
-          <span className="ignore-title">Показывать в списке моделей</span>
-          <div className="ignore-list">
-            {models.map((m) => {
-              const ignored = (cfg.ignored_models || []).includes(m);
-              return (
-                <label key={m} className="check">
-                  <input
-                    type="checkbox"
-                    checked={!ignored}
-                    onChange={() =>
-                      onChange({
-                        ...cfg,
-                        ignored_models: ignored
-                          ? (cfg.ignored_models || []).filter((x) => x !== m)
-                          : [...(cfg.ignored_models || []), m],
-                      })
-                    }
-                  />
-                  <span className="check-label">{m}</span>
-                </label>
-              );
-            })}
-          </div>
-          {(cfg.ignored_models || []).length > 0 && (
-            <p className="hint">
-              Снято с показа: {(cfg.ignored_models || []).join(", ")} — эти модели не появятся
-              в списках моделей.
-            </p>
-          )}
-        </div>
-      ) : (
-        <p className="hint">
-          {loading
-            ? "Загружаем список моделей…"
-            : "Список моделей недоступен — игнорирование недоступно, модель можно указать вручную ниже."}
-        </p>
-      )}
-      <label>
-        Модель
-        {loading ? (
-          <input value="" placeholder="Считываем модели…" disabled />
-        ) : models.length > 0 ? (
-          <ModelSelect
-            value={cfg.model}
-            options={models}
-            onChange={(m) => onChange({ ...cfg, model: m })}
-            wide
-          />
-        ) : (
-          <>
-            <input
-              value={cfg.model}
-              onChange={set("model")}
-              placeholder={modelsErr ? "Список недоступен — укажите модель вручную" : "Например, gpt-4o-mini"}
-            />
-            {modelsErr && <p className="status err">{modelsErr}</p>}
-          </>
-        )}
-      </label>
-    </div>
-  );
-}
-
 // ---------------------------------------------------------------- приложение
 
 export default function App() {
@@ -938,6 +658,12 @@ export default function App() {
 
   useEffect(() => {
     window.scrollTo(0, 0);
+  }, [tab, providersOpen]);
+
+  useEffect(() => {
+    if (tab !== "settings") {
+      setProvidersOpen(false);
+    }
   }, [tab]);
 
   useEffect(() => {
@@ -961,11 +687,6 @@ export default function App() {
     setScreen("login");
     setTab("chat");
     setProvidersOpen(false);
-  }
-
-  function setAgentModel(m: string | null) {
-    setStore((s) => ({ ...s, agent_model: m }));
-    api.agentsSave({ ...store, agent_model: m }).catch(() => {});
   }
 
   function setAgentSearchUrl(url: string | null) {
@@ -1017,7 +738,8 @@ export default function App() {
         tab === "chat" ? "chat-page" :
         tab === "vacancies" ? "vac-page" :
         tab === "hhchats" ? "hhch-page" :
-        tab === "knowledge" ? "know-page" : ""
+        tab === "knowledge" ? "know-page" :
+        tab === "settings" ? (providersOpen ? "providers-page" : "settings-page") : ""
       }>
         <div style={{ display: tab === "chat" ? "contents" : "none" }}>
           <Chat
@@ -1032,9 +754,10 @@ export default function App() {
         {tab === "hhchats" && <Chats />}
         {tab === "knowledge" && <Knowledge onNavigate={setTab} />}
         {tab === "profile" && <Profile onNavigate={setTab} />}
-        {tab === "settings" &&
-          (providersOpen ? (
-            <Providers
+        {tab === "settings" && (
+          providersOpen ? (
+            <ProvidersManager
+              initialStore={store}
               onBack={() => setProvidersOpen(false)}
               onSaved={(s) => setStore(s)}
             />
@@ -1044,10 +767,10 @@ export default function App() {
               setTheme={setTheme}
               store={store}
               onOpenProviders={() => setProvidersOpen(true)}
-              onAgentModel={setAgentModel}
               onSearchUrl={setAgentSearchUrl}
             />
-          ))}
+          )
+        )}
       </main>
     </>
   );
