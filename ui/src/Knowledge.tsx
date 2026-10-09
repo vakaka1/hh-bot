@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, ProfileData } from "./api";
 import {
+  ArrowLeft,
   BrainCircuit,
   Calendar,
   Check,
@@ -288,6 +289,15 @@ export default function Knowledge({ onNavigate }: KnowledgeProps) {
 
           {/* Быстрые действия в шапке */}
           <div className="knowledge-hero-actions">
+            {onNavigate && (
+              <button
+                className="ghost-btn"
+                onClick={() => onNavigate("profile")}
+                title="Вернуться в профиль"
+              >
+                <ArrowLeft size={16} /> Назад
+              </button>
+            )}
             <button
               className="btn-primary"
               onClick={() => {
@@ -297,15 +307,6 @@ export default function Knowledge({ onNavigate }: KnowledgeProps) {
             >
               <Plus size={16} /> Добавить факт
             </button>
-            {onNavigate && (
-              <button
-                className="ghost-btn"
-                onClick={() => onNavigate("chat")}
-                title="Перейти в чат с агентом"
-              >
-                <Sparkles size={15} /> Чат с агентом
-              </button>
-            )}
           </div>
         </div>
       </div>
@@ -462,8 +463,8 @@ export default function Knowledge({ onNavigate }: KnowledgeProps) {
               <Plus size={16} /> Добавить факт вручную
             </button>
             {onNavigate && (
-              <button className="ghost-btn" onClick={() => onNavigate("chat")}>
-                Перейти в чат
+              <button className="ghost-btn" onClick={() => onNavigate("profile")}>
+                <ArrowLeft size={15} /> Назад в профиль
               </button>
             )}
           </div>

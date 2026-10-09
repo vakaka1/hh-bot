@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { ArrowRight, BrainCircuit, Plus, Tag } from "lucide-react";
+import { BrainCircuit, Plus, Tag } from "lucide-react";
 import { api, isDemo, AgentConfig, AgentMode, AgentStore, Me, ProfileData, Resume, resumeHidden } from "./api";
 import ModelSelect from "./ModelSelect";
 import type { ModelEntry } from "./api";
@@ -301,11 +301,11 @@ function Profile({ onNavigate }: { onNavigate?: (tab: Tab) => void }) {
             </div>
             {onNavigate && (
               <button
-                className="ghost-btn small"
+                className="btn-primary small"
                 onClick={() => onNavigate("knowledge")}
                 title="Перейти к базе знаний со всеми плитками"
               >
-                Все знания <ArrowRight size={13} style={{ verticalAlign: -1, marginLeft: 2 }} />
+                Все знания
               </button>
             )}
           </div>
@@ -362,17 +362,6 @@ function Profile({ onNavigate }: { onNavigate?: (tab: Tab) => void }) {
                     <div className="profile-mini-tile-text">{n.text}</div>
                   </div>
                 ))}
-              </div>
-
-              <div className="profile-knowledge-footer-actions">
-                {onNavigate && (
-                  <button
-                    className="btn-primary small"
-                    onClick={() => onNavigate("knowledge")}
-                  >
-                    Перейти к базе знаний ({notes.length}) →
-                  </button>
-                )}
               </div>
             </div>
           )}
@@ -1010,10 +999,7 @@ export default function App() {
           <button className={"tab-btn" + (tab === "hhchats" ? " active" : "")} onClick={() => setTab("hhchats")}>
             Чаты
           </button>
-          <button className={"tab-btn" + (tab === "knowledge" ? " active" : "")} onClick={() => setTab("knowledge")}>
-            Знания
-          </button>
-          <button className={"tab-btn" + (tab === "profile" ? " active" : "")} onClick={() => setTab("profile")}>
+          <button className={"tab-btn" + (tab === "profile" || tab === "knowledge" ? " active" : "")} onClick={() => setTab("profile")}>
             Профиль
           </button>
           <button className={"tab-btn" + (tab === "settings" ? " active" : "")} onClick={() => setTab("settings")}>
