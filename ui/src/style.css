@@ -28,14 +28,22 @@ html[data-theme="dark"] {
 }
 
 * { box-sizing: border-box; }
-html, body, #root { height: 100%; }
+html { height: 100%; }
 
 body {
+  min-height: 100%;
   margin: 0;
   font-family: "Inter", "SF Pro Text", system-ui, -apple-system, "Segoe UI", sans-serif;
   background: var(--bg);
   color: var(--text);
   -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+#root {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
 }
 
 ::selection { background: var(--accent); color: #fff; }
@@ -59,9 +67,23 @@ header {
   height: 60px;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
-  position: sticky;
+  position: fixed;
   top: 0;
-  z-index: 10;
+  left: 0;
+  right: 0;
+  z-index: 100;
+  box-sizing: border-box;
+  box-shadow: 0 1px 3px rgba(20, 22, 26, 0.04);
+}
+html[data-theme="dark"] header {
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+@media (max-width: 860px) {
+  header {
+    padding: 0 16px;
+    gap: 18px;
+  }
 }
 
 .logo { display: flex; align-items: baseline; user-select: none; }
@@ -211,7 +233,13 @@ button {
 }
 
 /* ============ раскладка ============ */
-main { padding: 32px; max-width: 960px; margin: 0 auto; }
+main {
+  padding: 32px;
+  max-width: 960px;
+  margin: 60px auto 0;
+  box-sizing: border-box;
+  min-height: calc(100vh - 60px);
+}
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -462,7 +490,15 @@ html[data-theme="dark"] .chip.active { background: rgba(255, 59, 78, 0.12); }
 }
 
 /* ============ чат ============ */
-main.chat-page { padding: 0; max-width: none; height: calc(100vh - 61px); display: flex; }
+main.chat-page {
+  padding: 0;
+  max-width: none;
+  height: calc(100vh - 60px);
+  margin-top: 60px;
+  display: flex;
+  box-sizing: border-box;
+  overflow: hidden;
+}
 .chat-layout {
   display: flex;
   width: 100%;
@@ -1318,43 +1354,687 @@ html[data-theme="dark"] .hljs-title.function_, html[data-theme="dark"] .hljs-bui
   margin-bottom: 8px;
 }
 .list-card-title { font-weight: 600; font-size: 13.5px; }
-.note-card {
+/* ============ раздел «Знания о вас» ============ */
+main.know-page {
+  padding: 28px 32px 64px;
+  max-width: 1160px;
+  margin: 60px auto 0;
+  box-sizing: border-box;
+  min-height: calc(100vh - 60px);
+}
+
+.knowledge-page {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+/* Шапка страницы знаний */
+.knowledge-hero {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 24px 28px;
+  box-shadow: var(--shadow);
+}
+.knowledge-hero-content {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 24px;
+}
+@media (max-width: 800px) {
+  .knowledge-hero-content {
+    flex-direction: column;
+  }
+}
+.knowledge-title-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  flex: 1;
+}
+.knowledge-icon-wrap {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: rgba(196, 0, 29, 0.08);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+html[data-theme="dark"] .knowledge-icon-wrap {
+  background: rgba(255, 59, 78, 0.14);
+}
+.knowledge-title-with-badge {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.knowledge-title-with-badge h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.knowledge-count-badge {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+.knowledge-saving-badge {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--muted);
+  animation: pulse 1.5s infinite;
+}
+.knowledge-saved-badge {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ok);
+  background: rgba(26, 127, 55, 0.08);
+  padding: 2px 7px;
+  border-radius: 6px;
+}
+html[data-theme="dark"] .knowledge-saved-badge {
+  background: rgba(63, 185, 80, 0.12);
+}
+.knowledge-subtitle {
+  margin: 0;
+  font-size: 13.5px;
+  color: var(--muted);
+  line-height: 1.55;
+  max-width: 680px;
+}
+.knowledge-hero-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+.knowledge-hero-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.knowledge-banner-error {
+  margin: 0;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: rgba(196, 0, 29, 0.08);
+}
+
+/* Панель поиска и фильтров */
+.knowledge-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.knowledge-search-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.knowledge-search-icon {
+  position: absolute;
+  left: 14px;
+  color: var(--muted);
+  pointer-events: none;
+}
+.knowledge-search-input {
+  width: 100%;
+  margin: 0;
+  padding: 11px 40px 11px 38px;
+  font-size: 14px;
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 10px;
-  padding: 10px 14px 12px;
-  margin-top: 10px;
-  background: var(--surface);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
 }
-.note-card-head {
+.knowledge-search-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(196, 0, 29, 0.12);
+}
+.knowledge-search-clear {
+  position: absolute;
+  right: 12px;
+  background: transparent;
+  border: none;
+  padding: 4px;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+}
+.knowledge-search-clear:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
+/* Чипы фильтрации по темам */
+.knowledge-topics-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.topic-pill {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  padding: 5px 12px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: all .15s ease;
+}
+.topic-pill:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+  background: var(--surface-2);
+}
+.topic-pill.active {
+  background: var(--text);
+  color: var(--bg);
+  border-color: var(--text);
+  font-weight: 600;
+}
+.topic-pill-count {
+  font-size: 11px;
+  opacity: .8;
+}
+
+/* Карточка быстрого создания */
+.knowledge-create-card {
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: 14px;
+  padding: 20px 24px;
+  box-shadow: 0 4px 16px rgba(196, 0, 29, 0.08);
+  animation: fadeInDown .2s ease;
+}
+@keyframes fadeInDown {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.knowledge-create-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+.knowledge-create-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--text);
+}
+.knowledge-create-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.knowledge-field-group {
+  display: flex;
+  flex-direction: column;
+}
+.knowledge-field-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.knowledge-create-topic-input {
+  margin: 0;
+  padding: 8px 12px;
+  font-size: 13.5px;
+}
+.knowledge-topic-suggestions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.suggestion-label {
+  font-size: 11.5px;
+  color: var(--muted);
+  margin-right: 2px;
+}
+.suggestion-chip {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  padding: 3px 9px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: all .15s;
+}
+.suggestion-chip:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+.knowledge-create-textarea {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 10px 12px;
+  font-size: 14px;
+  font-family: inherit;
+  line-height: 1.5;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  resize: vertical;
+  min-height: 80px;
+}
+.knowledge-create-textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(196, 0, 29, 0.12);
+}
+.knowledge-create-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+/* Сетка плиток знаний */
+.knowledge-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(310px, 1fr));
+  gap: 16px;
+}
+@media (max-width: 680px) {
+  .knowledge-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Отдельная плитка знания */
+.knowledge-tile {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px 20px;
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 14px;
+  transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease;
+  min-height: 140px;
+}
+.knowledge-tile:hover {
+  border-color: var(--border-strong);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.06);
+  transform: translateY(-2px);
+}
+html[data-theme="dark"] .knowledge-tile:hover {
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+}
+
+.knowledge-tile-top {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
 }
-.note-card .note-topic {
-  flex: 1;
-  border: none;
-  background: transparent;
-  padding: 4px 2px;
-  font-weight: 600;
-  font-size: 13.5px;
-  color: var(--text);
+.knowledge-tile-badges {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
 }
-.note-card .note-topic::placeholder { color: var(--muted); font-weight: 400; }
-.note-card textarea {
-  width: 100%;
-  box-sizing: border-box;
-  font: inherit;
-  line-height: 1.45;
-  color: var(--text);
+
+/* Цветные теги категорий */
+.knowledge-topic-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 3px 9px;
+  border-radius: 6px;
+  letter-spacing: 0.01em;
+}
+.badge-topic-blue {
+  background: rgba(37, 99, 235, 0.1);
+  color: #2563eb;
+}
+html[data-theme="dark"] .badge-topic-blue {
+  background: rgba(59, 130, 246, 0.18);
+  color: #60a5fa;
+}
+.badge-topic-purple {
+  background: rgba(124, 58, 237, 0.1);
+  color: #7c3aed;
+}
+html[data-theme="dark"] .badge-topic-purple {
+  background: rgba(139, 92, 246, 0.18);
+  color: #a78bfa;
+}
+.badge-topic-green {
+  background: rgba(16, 185, 129, 0.1);
+  color: #059669;
+}
+html[data-theme="dark"] .badge-topic-green {
+  background: rgba(52, 211, 153, 0.18);
+  color: #34d399;
+}
+.badge-topic-amber {
+  background: rgba(245, 158, 11, 0.12);
+  color: #d97706;
+}
+html[data-theme="dark"] .badge-topic-amber {
+  background: rgba(251, 191, 36, 0.18);
+  color: #fbbf24;
+}
+.badge-topic-rose {
+  background: rgba(244, 63, 94, 0.1);
+  color: #e11d48;
+}
+html[data-theme="dark"] .badge-topic-rose {
+  background: rgba(251, 113, 133, 0.18);
+  color: #fb7185;
+}
+.badge-topic-cyan {
+  background: rgba(6, 182, 212, 0.1);
+  color: #0891b2;
+}
+html[data-theme="dark"] .badge-topic-cyan {
+  background: rgba(34, 211, 238, 0.18);
+  color: #38bdf8;
+}
+.badge-topic-default {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.knowledge-tile-date {
+  font-size: 11px;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Меню действий в плитке */
+.knowledge-tile-menu {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  opacity: 0.65;
+  transition: opacity .15s;
+}
+.knowledge-tile:hover .knowledge-tile-menu {
+  opacity: 1;
+}
+.knowledge-tile-icon-btn {
   background: transparent;
   border: none;
-  padding: 2px 2px;
+  padding: 5px;
+  border-radius: 6px;
+  color: var(--muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all .15s;
+}
+.knowledge-tile-icon-btn:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+.knowledge-tile-icon-btn.danger:hover {
+  color: var(--danger);
+  background: rgba(196, 0, 29, 0.08);
+}
+.knowledge-tile-icon-btn .icon-success {
+  color: var(--ok);
+}
+
+/* Текст внутри плитки */
+.knowledge-tile-content {
+  flex: 1;
+}
+.knowledge-tile-text {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Редактирование плитки */
+.knowledge-tile-editing {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(196, 0, 29, 0.12);
+}
+.knowledge-tile-edit-head {
+  margin-bottom: 8px;
+}
+.knowledge-tile-edit-topic {
+  margin: 0;
+  padding: 6px 10px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.knowledge-tile-edit-text {
+  width: 100%;
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 13.5px;
+  font-family: inherit;
+  line-height: 1.5;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
   resize: vertical;
 }
-.note-card textarea:focus { outline: none; }
-.note-card textarea::placeholder { color: var(--muted); }
-.note-card .link-btn { white-space: nowrap; }
+.knowledge-tile-edit-text:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.knowledge-tile-edit-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+.knowledge-tile-edit-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+/* Пустые состояния */
+.knowledge-empty-state {
+  background: var(--surface);
+  border: 1px dashed var(--border-strong);
+  border-radius: 16px;
+  padding: 48px 32px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.knowledge-empty-icon-wrap {
+  width: 64px;
+  height: 64px;
+  border-radius: 20px;
+  background: rgba(196, 0, 29, 0.08);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 16px;
+}
+html[data-theme="dark"] .knowledge-empty-icon-wrap {
+  background: rgba(255, 59, 78, 0.14);
+}
+.knowledge-empty-state h3 {
+  margin: 0 0 8px;
+  font-size: 17px;
+  font-weight: 700;
+}
+.knowledge-empty-desc {
+  margin: 0 0 24px;
+  color: var(--muted);
+  font-size: 13.5px;
+  line-height: 1.6;
+  max-width: 520px;
+}
+.knowledge-empty-buttons {
+  display: flex;
+  gap: 12px;
+}
+.knowledge-empty-buttons button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.knowledge-empty-search {
+  text-align: center;
+  padding: 40px 20px;
+  color: var(--muted);
+  font-size: 14px;
+}
+.knowledge-empty-search button {
+  margin-top: 10px;
+}
+.knowledge-loading {
+  text-align: center;
+  padding: 40px;
+}
+
+/* ============ Сводка знаний на странице Профиль ============ */
+.profile-knowledge-summary-card {
+  position: relative;
+  overflow: hidden;
+}
+.profile-knowledge-head-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.profile-knowledge-icon {
+  color: var(--accent);
+}
+.profile-knowledge-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+.profile-knowledge-body {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.profile-knowledge-topics {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.profile-topic-chip {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 11.5px;
+  color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  transition: all .15s;
+}
+.profile-topic-chip:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.profile-topic-count {
+  font-weight: 700;
+  color: var(--accent);
+  font-size: 11px;
+}
+.profile-topic-chip.more {
+  color: var(--muted);
+  font-weight: 500;
+}
+.profile-knowledge-preview-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.profile-knowledge-mini-tile {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: all .15s;
+}
+.profile-knowledge-mini-tile:hover {
+  border-color: var(--border-strong);
+  background: var(--surface);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+.profile-mini-tile-topic {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  margin-bottom: 3px;
+}
+.profile-mini-tile-text {
+  font-size: 12.5px;
+  color: var(--text);
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.profile-knowledge-footer-actions {
+  margin-top: 4px;
+}
+.profile-knowledge-empty {
+  margin-top: 14px;
+}
+.profile-knowledge-empty button {
+  margin-top: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
 
 /* пометка демо-режима в шапке */
 .demo-badge {
@@ -1372,8 +2052,10 @@ html[data-theme="dark"] .hljs-title.function_, html[data-theme="dark"] .hljs-bui
 main.vac-page {
   padding: 0;
   max-width: none;
-  height: calc(100vh - 61px);
+  height: calc(100vh - 60px);
+  margin-top: 60px;
   overflow: hidden;
+  box-sizing: border-box;
 }
 
 .vac-layout {
@@ -1645,8 +2327,10 @@ main.vac-page {
 .hhch-page {
   padding: 0;
   max-width: none;
-  height: calc(100vh - 61px);
+  height: calc(100vh - 60px);
+  margin-top: 60px;
   overflow: hidden;
+  box-sizing: border-box;
 }
 
 .hhch-layout {

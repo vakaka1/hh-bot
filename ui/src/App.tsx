@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { ArrowRight, BrainCircuit, Plus, Tag } from "lucide-react";
 import { api, isDemo, AgentConfig, AgentMode, AgentStore, Me, ProfileData, Resume, resumeHidden } from "./api";
 import ModelSelect from "./ModelSelect";
 import type { ModelEntry } from "./api";
@@ -7,9 +8,10 @@ import { loadAllModels } from "./api";
 import Chat from "./Chat";
 import Vacancies from "./Vacancies";
 import Chats from "./Chats";
+import Knowledge from "./Knowledge";
 
 type Screen = "loading" | "login" | "app";
-type Tab = "chat" | "vacancies" | "hhchats" | "profile" | "settings";
+type Tab = "chat" | "vacancies" | "hhchats" | "knowledge" | "profile" | "settings";
 
 type ThemeSetting = "system" | "light" | "dark";
 
@@ -108,7 +110,7 @@ function LoginScreen({ onDone }: { onDone: () => void }) {
 
 // ---------------------------------------------------------------- профиль: знания о пользователе
 
-function Profile() {
+function Profile({ onNavigate }: { onNavigate?: (tab: Tab) => void }) {
   const [me, setMe] = useState<Me | null>(null);
   const [meErr, setMeErr] = useState("");
   const [resumes, setResumes] = useState<Resume[] | null>(null);
@@ -117,8 +119,6 @@ function Profile() {
   const [resAction, setResAction] = useState<{ text: string; ok: boolean } | null>(null);
 
   const [profile, setProfile] = useState<ProfileData>({});
-  const [saving, setSaving] = useState(false);
-  const [saveErr, setSaveErr] = useState("");
   const [statusBusy, setStatusBusy] = useState(false);
   const [statusErr, setStatusErr] = useState("");
 
@@ -152,46 +152,16 @@ function Profile() {
       .catch(() => {});
   }, []);
 
-  // заметки — единственное, что пользователь правит руками: свободные
-  // факты о себе. Структуру для резюме агент ведёт сам из разговора.
   const notes = profile.notes || [];
 
-  // знания сохраняются автоматически: агент пополняет их сам, поэтому
-  // кнопки «Сохранить» нет — правки уходят в хранилище сами
-  const profileRef = useRef(profile);
-  profileRef.current = profile;
-  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  function scheduleSave() {
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    setSaving(true);
-    saveTimer.current = setTimeout(async () => {
-      try {
-        await api.profileSave(profileRef.current);
-        setSaveErr("");
-      } catch (e) {
-        setSaveErr(String(e));
-      } finally {
-        setSaving(false);
-      }
-    }, 800);
-  }
-
-  function setNotes(next: ProfileData["notes"]) {
-    setProfile((prev) => ({ ...prev, notes: next }));
-    scheduleSave();
-  }
-
-  function addNote() {
-    setNotes([...notes, { topic: "", text: "", added_at: Date.now() / 1000 }]);
-  }
-
-  function patchNote(index: number, patch: { topic?: string; text?: string }) {
-    setNotes(notes.map((n, i) => (i === index ? { ...n, ...patch } : n)));
-  }
-
-  function removeNote(index: number) {
-    setNotes(notes.filter((_, i) => i !== index));
-  }
+  const topicsSummary = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const n of notes) {
+      const t = (n.topic || "").trim() || "Без темы";
+      map.set(t, (map.get(t) || 0) + 1);
+    }
+    return Array.from(map.entries()).sort((a, b) => b[1] - a[1]);
+  }, [notes]);
 
   // Смена статуса поиска: сразу меняем на hh.ru и сохраняем локально.
   async function changeSearchStatus(id: string) {
@@ -320,48 +290,92 @@ function Profile() {
           </div>
         </div>
 
-        <div className="card">
+        <div className="card profile-knowledge-summary-card">
           <div className="card-head">
-            <h2>Знания о вас</h2>
-            {saving && <span className="hint">Сохраняем…</span>}
+            <div className="profile-knowledge-head-title">
+              <BrainCircuit size={18} className="profile-knowledge-icon" />
+              <h2>Знания о вас</h2>
+              <span className="profile-knowledge-badge">
+                {notes.length} {notes.length === 1 ? "факт" : notes.length >= 2 && notes.length <= 4 ? "факта" : "фактов"}
+              </span>
+            </div>
+            {onNavigate && (
+              <button
+                className="ghost-btn small"
+                onClick={() => onNavigate("knowledge")}
+                title="Перейти к базе знаний со всеми плитками"
+              >
+                Все знания <ArrowRight size={13} style={{ verticalAlign: -1, marginLeft: 2 }} />
+              </button>
+            )}
           </div>
           <p className="hint">
-            Здесь агент хранит всё, что узнал о вас: рассказывайте о себе в чате — он запомнит
-            опыт, навыки, желания, обстоятельства. Из этих знаний он потом соберёт резюме.
-            Можно добавить или поправить факты и вручную.
+            Факты, которые агент запоминает во время общения: опыт, стек, условия и цели.
+            На их основе он подбирает вакансии и готовит тексты для резюме.
           </p>
-          {notes.length === 0 && (
-            <p className="hint">
-              Пока ничего. Начните с чата: просто расскажите агенту о себе.
-            </p>
-          )}
-          {notes.map((n, i) => (
-            <div className="note-card" key={i}>
-              <div className="note-card-head">
-                <input
-                  className="note-topic"
-                  value={n.topic || ""}
-                  onChange={(e) => patchNote(i, { topic: e.target.value })}
-                  placeholder="Тема (необязательно)"
-                />
-                <button className="link-btn" onClick={() => removeNote(i)}>
-                  Удалить
+
+          {notes.length === 0 ? (
+            <div className="profile-knowledge-empty">
+              <p className="hint">Пока фактов нет. Расскажите агенту о себе в чате или добавьте их вручную.</p>
+              {onNavigate && (
+                <button className="btn-primary small" onClick={() => onNavigate("knowledge")}>
+                  <Plus size={13} /> Добавить в базу знаний
                 </button>
-              </div>
-              <textarea
-                rows={2}
-                value={n.text}
-                onChange={(e) => patchNote(i, { text: e.target.value })}
-                placeholder="Факт"
-              />
+              )}
             </div>
-          ))}
-          <div className="row" style={{ marginTop: 10 }}>
-            <button className="ghost-btn small" onClick={addNote}>
-              + Добавить факт
-            </button>
-          </div>
-          {saveErr && <p className="status err">{saveErr}</p>}
+          ) : (
+            <div className="profile-knowledge-body">
+              {/* Теги категорий с количеством фактов */}
+              <div className="profile-knowledge-topics">
+                {topicsSummary.slice(0, 5).map(([topic, count]) => (
+                  <button
+                    key={topic}
+                    className="profile-topic-chip"
+                    onClick={() => onNavigate?.("knowledge")}
+                    title={`Показать факты «${topic}» в базе знаний`}
+                  >
+                    <Tag size={10} />
+                    <span>{topic}</span>
+                    <span className="profile-topic-count">{count}</span>
+                  </button>
+                ))}
+                {topicsSummary.length > 5 && (
+                  <button
+                    className="profile-topic-chip more"
+                    onClick={() => onNavigate?.("knowledge")}
+                  >
+                    +{topicsSummary.length - 5} ещё
+                  </button>
+                )}
+              </div>
+
+              {/* Превью последних 2-3 фактов в виде аккуратных плашек */}
+              <div className="profile-knowledge-preview-list">
+                {notes.slice(-3).reverse().map((n, i) => (
+                  <div
+                    className="profile-knowledge-mini-tile"
+                    key={i}
+                    onClick={() => onNavigate?.("knowledge")}
+                    title="Перейти к базе знаний для просмотра и редактирования"
+                  >
+                    <div className="profile-mini-tile-topic">{n.topic?.trim() || "Факт"}</div>
+                    <div className="profile-mini-tile-text">{n.text}</div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="profile-knowledge-footer-actions">
+                {onNavigate && (
+                  <button
+                    className="btn-primary small"
+                    onClick={() => onNavigate("knowledge")}
+                  >
+                    Перейти к базе знаний ({notes.length}) →
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -934,6 +948,10 @@ export default function App() {
   }
 
   useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [tab]);
+
+  useEffect(() => {
     api
       .authStatus()
       .then((st) => setScreen(st.logged_in ? "app" : "login"))
@@ -992,6 +1010,9 @@ export default function App() {
           <button className={"tab-btn" + (tab === "hhchats" ? " active" : "")} onClick={() => setTab("hhchats")}>
             Чаты
           </button>
+          <button className={"tab-btn" + (tab === "knowledge" ? " active" : "")} onClick={() => setTab("knowledge")}>
+            Знания
+          </button>
           <button className={"tab-btn" + (tab === "profile" ? " active" : "")} onClick={() => setTab("profile")}>
             Профиль
           </button>
@@ -1006,7 +1027,12 @@ export default function App() {
         </div>
       </header>
 
-      <main className={tab === "chat" ? "chat-page" : tab === "vacancies" ? "vac-page" : tab === "hhchats" ? "hhch-page" : ""}>
+      <main className={
+        tab === "chat" ? "chat-page" :
+        tab === "vacancies" ? "vac-page" :
+        tab === "hhchats" ? "hhch-page" :
+        tab === "knowledge" ? "know-page" : ""
+      }>
         <div style={{ display: tab === "chat" ? "contents" : "none" }}>
           <Chat
             store={store}
@@ -1018,7 +1044,8 @@ export default function App() {
         </div>
         {tab === "vacancies" && <Vacancies />}
         {tab === "hhchats" && <Chats />}
-        {tab === "profile" && <Profile />}
+        {tab === "knowledge" && <Knowledge onNavigate={setTab} />}
+        {tab === "profile" && <Profile onNavigate={setTab} />}
         {tab === "settings" &&
           (providersOpen ? (
             <Providers

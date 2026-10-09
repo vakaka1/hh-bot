@@ -73,8 +73,10 @@ function toolLabel(name: string, args?: Record<string, unknown>): string {
   }
   if (name === "navigate") {
     const tab = args?.tab as string | undefined;
+    if (tab === "knowledge") return "Открывает раздел «Знания»";
     if (tab === "profile") return "Открывает раздел «Профиль»";
     if (tab === "vacancies") return "Открывает раздел «Вакансии»";
+    if (tab === "hhchats") return "Открывает раздел «Чаты»";
     if (tab === "settings") return "Открывает настройки";
     return "Открывает чат";
   }
@@ -178,7 +180,7 @@ export default function Chat({
   mode: AgentMode;
   onMode: (m: AgentMode) => void;
   onTheme: (t: "light" | "dark" | "system") => void;
-  onNavigate: (tab: "chat" | "vacancies" | "profile" | "settings") => void;
+  onNavigate: (tab: "chat" | "vacancies" | "hhchats" | "knowledge" | "profile" | "settings") => void;
 }) {
   const [chats, setChats] = useState<ChatSummary[]>([]);
   const [currentId, setCurrentId] = useState<string | null>(null);
@@ -411,9 +413,9 @@ export default function Chat({
             } else if (
               e.name === "navigate" &&
               e.args?.tab &&
-              ["chat", "vacancies", "profile", "settings"].includes(e.args.tab)
+              ["chat", "vacancies", "hhchats", "knowledge", "profile", "settings"].includes(e.args.tab)
             ) {
-              onNavigate(e.args.tab as "chat" | "vacancies" | "profile" | "settings");
+              onNavigate(e.args.tab as "chat" | "vacancies" | "hhchats" | "knowledge" | "profile" | "settings");
             }
             result = prev; break;
           }
