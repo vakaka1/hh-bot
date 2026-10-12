@@ -510,7 +510,10 @@ export default function App() {
   const [providersOpen, setProvidersOpen] = useState(false);
   const [store, setStore] = useState<AgentStore>({ providers: [], active: null });
   const [agentMode, setAgentMode] = useState<AgentMode>(
-    () => (localStorage.getItem("agent_mode") as AgentMode) || "chat"
+    () => {
+      const saved = localStorage.getItem("agent_mode");
+      return saved === "confirm" || saved === "full" ? saved : "chat";
+    }
   );
 
   function changeAgentMode(m: AgentMode) {

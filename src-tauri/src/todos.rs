@@ -508,7 +508,7 @@ mod tests {
             }
         });
         let path = std::env::temp_dir().join(format!("hh-todos-stream-{}.json", id()));
-        let tools = build_agent_tools("chat");
+        let tools = build_agent_tools(AgentMode::Full);
         let mut input =
             vec![json!({"role":"user","content":"Подготовь и проверь резюме по плану"})];
         let cancelled = AtomicBool::new(false);

@@ -1459,7 +1459,7 @@ const TOOLS_JSON: &str = r#"[
   }
 ]"#;
 
-// инструменты приложения — доступны в режимах confirm и full
+// Инструменты приложения: права определяются общей политикой режима.
 const APP_TOOLS_JSON: &str = r#"[
   {
     "type": "function",
@@ -1676,12 +1676,48 @@ const APP_TOOLS_JSON: &str = r#"[
   }
 ]"#;
 
-// инструменты, меняющие состояние приложения — в режиме confirm требуют подтверждения
+// Read access is explicit: new tools default to actions until classified.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AgentMode {
+    Chat,
+    Confirm,
+    Full,
+}
+
+impl AgentMode {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "chat" => Ok(Self::Chat),
+            "confirm" => Ok(Self::Confirm),
+            "full" => Ok(Self::Full),
+            _ => Err(format!("Неизвестный режим агента: {value}")),
+        }
+    }
+
+    fn allows(self, name: &str) -> bool {
+        self != Self::Chat || !is_app_action(name)
+    }
+
+    fn requires_confirmation(self, name: &str) -> bool {
+        self == Self::Confirm && is_app_action(name)
+    }
+
+    fn instructions(self) -> &'static str {
+        match self {
+            Self::Chat => "\nТекущий режим — «Чат». Доступны только просмотр, поиск и уточняющие вопросы. Не изменяй данные, планы или интерфейс. Для выполнения изменений предложи пользователю самостоятельно выбрать другой режим.\n",
+            Self::Confirm => "\nТекущий режим — «Подтверждение». Доступны все инструменты. Каждый вызов, изменяющий данные, планы или интерфейс, требует отдельного разрешения пользователя через карточку подтверждения. Просмотр и поиск выполняй сразу. Не считай просьбу в чате заменой подтверждению, уважай отказ.\n",
+            Self::Full => "\nТекущий режим — «Полное доверие». Доступны все инструменты. Выполняй поручения пользователя сразу, без запросов разрешения и дополнительных согласований действий. Если не хватает необходимых сведений, уточни их; не выдумывай данные и не сообщай об успехе при ошибке.\n",
+        }
+    }
+}
+
 fn is_app_action(name: &str) -> bool {
-    knowledge::is_write(name) || matches!(
-        name,
-        "set_resume_skill_levels" | "create_resume" | "update_resume" | "set_theme" | "navigate" | "update_profile" | "unpublish_resume" | "publish_resume" | "edit_resume"
-        | "create_tracking" | "update_tracking" | "delete_tracking" | "send_chat_message"
+    !matches!(name,
+        "current_datetime" | "web_search" | "fetch_url" | "render_page"
+        | "read_profile" | "search_vacancies" | "list_trackings" | "prepare_resume_texts"
+        | "list_resumes" | "read_resume" | "resume_reference"
+        | "list_chats" | "read_chat" | "ask_questions" | "read_todo_plans"
+        | "list_knowledge" | "read_knowledge" | "list_knowledge_topics"
     )
 }
 
@@ -2896,7 +2932,7 @@ list_knowledge поддерживает поиск, фильтр темы и с�
     p.push_str(
         "\n## Планы сложных задач\n\n\
 Для сложной задачи с несколькими зависимыми этапами создай todo-план через create_todo_plan до основной работы. \
-Для простого вопроса план не нужен. План доступен во всех режимах без подтверждения: это организация твоей работы. \
+Для простого вопроса план не нужен. В режиме «Чат» доступно только чтение сохранённых планов; сформулируй новый план текстом ответа. В режиме «Подтверждение» создание и изменение плана требуют разрешения, в «Полном доверии» выполняются сразу. \
 Перед созданием учти сохранённые планы этой задачи, при необходимости вызови read_todo_plans. \
 Продолжай подходящий незавершённый план, а для новой независимой задачи архивируй старый через update_todo_plan. \
 Шаги формулируй конкретно и проверяемо, сохраняя их ID при обновлении. \
@@ -3248,7 +3284,7 @@ async fn chat_start(
     provider: Option<usize>,
     on_event: tauri::ipc::Channel<serde_json::Value>,
 ) -> Result<(), String> {
-    let mode = mode.unwrap_or_else(|| "chat".into());
+    let mode = AgentMode::parse(mode.as_deref().unwrap_or("chat"))?;
     let store: AgentStore = read_json(agents_path(&app)?).ok_or("Провайдеры не настроены")?;
     // провайдер выбирается под модель: если модель чужого провайдера —
     // запрос пойдёт к нему, а не к активному
@@ -3293,7 +3329,7 @@ async fn chat_start(
         &chat_id,
         &message,
         &model,
-        &mode,
+        mode,
         &base,
         &api_key,
         active.rate_limit,
@@ -3320,7 +3356,7 @@ async fn chat_start(
     }
 }
 
-fn build_agent_tools(mode: &str) -> serde_json::Value {
+fn build_agent_tools(mode: AgentMode) -> serde_json::Value {
     // набор инструментов зависит от режима:
     //   chat — чтение и поиск; confirm/full — плюс изменения в приложении
     // объявления инструментов в TOOLS_JSON даны во вложенном формате
@@ -3351,11 +3387,10 @@ fn build_agent_tools(mode: &str) -> serde_json::Value {
     tools.extend(collect_tools(questions::TOOLS));
     tools.extend(collect_tools(todos::TOOLS));
     tools.extend(collect_tools(knowledge::READ_TOOLS));
-    if mode == "confirm" || mode == "full" {
-        tools.extend(collect_tools(APP_TOOLS_JSON));
-        tools.extend(collect_tools(knowledge::WRITE_TOOLS));
-        tools.extend(collect_tools(resumes::TOOLS));
-    }
+    tools.extend(collect_tools(APP_TOOLS_JSON));
+    tools.extend(collect_tools(knowledge::WRITE_TOOLS));
+    tools.extend(collect_tools(resumes::TOOLS));
+    tools.retain(|tool| tool["name"].as_str().map(|name| mode.allows(name)).unwrap_or(false));
     json!(tools)
 }
 
@@ -3365,7 +3400,7 @@ async fn chat_run(
     chat_id: &str,
     message: &str,
     model: &str,
-    mode: &str,
+    mode: AgentMode,
     base: &str,
     api_key: &str,
     rate_limit: u32,
@@ -3434,6 +3469,7 @@ async fn chat_run(
 
     // ---- цикл агента (Responses API: instructions + input-элементы)
     let mut instructions = build_system_prompt(app, model);
+    instructions.push_str(mode.instructions());
     instructions.push_str(&todos::context(app, chat_id));
     // content — простая строка: часть OpenAI-совместимых серверов (vLLM и др.)
     // не принимает массив частей, а строка валидна и для OpenAI
@@ -3602,6 +3638,7 @@ async fn chat_run(
 
             // Добавляем вызовы функций ассистента в input для Responses API
             for call in &result.function_calls {
+                if cancelled.load(Ordering::Relaxed) { break; }
                 let name = call["name"].as_str().unwrap_or("?").to_string();
                 let args_s = call["arguments"].as_str().unwrap_or("{}").to_string();
                 let call_id = call["call_id"].as_str().unwrap_or("call").to_string();
@@ -3639,6 +3676,7 @@ async fn chat_run(
 
             let mut questions_asked = false;
             for call in &result.function_calls {
+                if cancelled.load(Ordering::Relaxed) { break; }
                 let name = call["name"].as_str().unwrap_or("?").to_string();
                 let args_s = call["arguments"].as_str().unwrap_or("{}").to_string();
                 let args: serde_json::Value = serde_json::from_str(&args_s).unwrap_or(json!({}));
@@ -3661,7 +3699,7 @@ async fn chat_run(
                 close_thinking(&parts_log, &thinking_started);
 
                 // подтверждение действия в режиме confirm
-                let mut approved = mode != "confirm" || !is_app_action(&name);
+                let mut approved = !mode.requires_confirmation(&name);
                 if !approved {
                     let (tx, mut rx) = tokio::sync::oneshot::channel::<String>();
                     pending_confirms()
@@ -3670,12 +3708,16 @@ async fn chat_run(
                         .entry(chat_id.to_string())
                         .or_default()
                         .insert(call_id.clone(), tx);
-                    let _ = on_event.send(serde_json::json!({
+                    if on_event.send(serde_json::json!({
                         "type": "confirm_request",
                         "call_id": call_id,
                         "name": name,
                         "args": args,
-                    }));
+                    })).is_err() {
+                        pending_confirms().lock().expect("mutex").get_mut(chat_id)
+                            .map(|calls| calls.remove(&call_id));
+                        return Err("Не удалось показать запрос подтверждения".into());
+                    }
                     // ждём решение пользователя, но отмена (Стоп) работает и здесь
                     let decision = loop {
                         tokio::select! {
@@ -3689,6 +3731,8 @@ async fn chat_run(
                             }
                         }
                     };
+                    pending_confirms().lock().expect("mutex").get_mut(chat_id)
+                        .map(|calls| calls.remove(&call_id));
                     if decision == "__cancelled__" {
                         // прерываем и for-цикл инструментов, и внешний loop
                         cancelled.store(true, Ordering::Relaxed);
@@ -3759,10 +3803,12 @@ async fn chat_run(
                 // A deleted or corrected fact must not remain in the next system prompt.
                 if knowledge::is_write(&name) && !output.starts_with("Ошибка инструмента:") {
                     instructions = build_system_prompt(app, model);
+                    instructions.push_str(mode.instructions());
                     instructions.push_str(&todos::context(app, chat_id));
                 }
                 if matches!(name.as_str(), "create_todo_plan" | "update_todo_plan") && !output.starts_with("Ошибка инструмента:") {
                     instructions = build_system_prompt(app, model);
+                    instructions.push_str(mode.instructions());
                     instructions.push_str(&todos::context(app, chat_id));
                 }
                 // для инспекции показываем и ответ инструмента (укороченно)
@@ -4070,15 +4116,66 @@ mod resume_agent_tests {
         assert!(!is_app_action("ask_questions"));
         for name in ["create_todo_plan", "update_todo_plan", "read_todo_plans"] {
             assert!(names.contains(name));
-            assert!(!is_app_action(name));
+            assert_eq!(is_app_action(name), name != "read_todo_plans");
         }
         for mode in ["chat", "confirm", "full"] {
-            let tools = build_agent_tools(mode);
+            let tools = build_agent_tools(AgentMode::parse(mode).unwrap());
             for name in ["create_todo_plan", "update_todo_plan", "read_todo_plans"] {
-                assert!(tools.as_array().unwrap().iter().any(|t| t["name"] == name), "{mode}: {name}");
+                assert_eq!(tools.as_array().unwrap().iter().any(|t| t["name"] == name), mode != "chat" || name == "read_todo_plans", "{mode}: {name}");
             }
         }
         assert!(!is_app_action("resume_reference"));
+    }
+
+    #[test]
+    fn mode_policy_covers_every_registered_tool() {
+        let all = build_agent_tools(AgentMode::Full);
+        let confirm = build_agent_tools(AgentMode::Confirm);
+        let chat = build_agent_tools(AgentMode::Chat);
+        assert_eq!(all, confirm);
+        for tool in all.as_array().unwrap() {
+            let name = tool["name"].as_str().unwrap();
+            let in_chat = chat.as_array().unwrap().iter().any(|t| t["name"] == name);
+            assert_eq!(in_chat, !is_app_action(name), "{name}");
+            assert_eq!(AgentMode::Confirm.requires_confirmation(name), is_app_action(name));
+            assert!(!AgentMode::Full.requires_confirmation(name));
+        }
+        for name in ["list_resumes", "read_resume", "list_chats", "read_chat", "resume_reference", "read_todo_plans"] {
+            assert!(chat.as_array().unwrap().iter().any(|t| t["name"] == name), "{name}");
+        }
+        for name in ["create_todo_plan", "update_todo_plan", "send_chat_message", "navigate", "set_theme", "create_knowledge"] {
+            assert!(!AgentMode::Chat.allows(name), "{name}");
+            assert!(AgentMode::Confirm.requires_confirmation(name), "{name}");
+            assert!(AgentMode::Full.allows(name), "{name}");
+        }
+        assert!(!AgentMode::Chat.allows("unknown_future_tool"));
+        assert!(AgentMode::Confirm.requires_confirmation("unknown_future_tool"));
+        for invalid in ["", "FULL", "unexpected"] {
+            assert!(AgentMode::parse(invalid).is_err());
+        }
+        for mode in [AgentMode::Chat, AgentMode::Confirm, AgentMode::Full] {
+            assert!(!mode.instructions().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn confirmation_is_bound_to_chat_and_call_and_consumed_once() {
+        let chat_id = format!("mode-test-{}", std::process::id());
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        pending_confirms().lock().unwrap().entry(chat_id.clone()).or_default()
+            .insert("action".into(), tx);
+        chat_confirm("another-chat".into(), "action".into(), "allow".into());
+        chat_confirm(chat_id.clone(), "another-call".into(), "allow".into());
+        assert!(matches!(rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
+        chat_confirm(chat_id.clone(), "action".into(), "deny".into());
+        assert_eq!(rx.await.unwrap(), "deny");
+        chat_confirm(chat_id.clone(), "action".into(), "allow".into());
+        assert!(pending_confirms().lock().unwrap()[&chat_id].is_empty());
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        pending_confirms().lock().unwrap().get_mut(&chat_id).unwrap().insert("next-action".into(), tx);
+        chat_confirm(chat_id.clone(), "next-action".into(), "allow".into());
+        assert_eq!(rx.await.unwrap(), "allow");
+        pending_confirms().lock().unwrap().remove(&chat_id);
     }
 
     #[test]

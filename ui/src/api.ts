@@ -648,6 +648,9 @@ export const api = {
   chatStop: (chatId: string) => {
     if (demo) {
       demoCancelled.add(chatId);
+      for (const pending of demoConfirmations.values()) {
+        if (pending.chatId === chatId) pending.resolve("deny");
+      }
       const pending = demoQuestions.get(chatId);
       if (pending) { demoQuestions.delete(chatId); pending.resolve({ answers: {}, cancelled: true }); }
       return Promise.resolve();
@@ -674,8 +677,13 @@ export const api = {
   chatPendingQuestion: (chatId: string) => invoke<PendingQuestion | null>("chat_pending_question", { chatId }),
   chatAnswer: (chatId: string, callId: string, answers: Record<string, string>, cancelled = false) =>
     invoke<void>("chat_answer", { chatId, callId, answers, cancelled }),
-  chatConfirm: (chatId: string, callId: string, decision: "allow" | "deny") =>
-    invoke<void>("chat_confirm", { chatId, callId, decision }),
+  chatConfirm: (chatId: string, callId: string, decision: "allow" | "deny") => {
+    if (demo) {
+      demoConfirmations.get(JSON.stringify([chatId, callId]))?.resolve(decision);
+      return Promise.resolve();
+    }
+    return invoke<void>("chat_confirm", { chatId, callId, decision });
+  },
 
   // -------------------------------------------------------------- чаты с работодателями (hh.ru)
   hhChatsList: (page = 0) => {
@@ -765,9 +773,9 @@ export type ChatEvent =
 export type AgentMode = "chat" | "confirm" | "full";
 
 export const AGENT_MODES: { id: AgentMode; label: string; hint: string }[] = [
-  { id: "chat", label: "Чат", hint: "Агент только отвечает — приложением не управляет" },
-  { id: "confirm", label: "Подтверждение", hint: "Действия в приложении — только после вашего подтверждения" },
-  { id: "full", label: "Полное доверие", hint: "Агент выполняет действия сразу, без запроса" },
+  { id: "chat", label: "Чат", hint: "Только просмотр и поиск, без изменения данных" },
+  { id: "confirm", label: "Подтверждение", hint: "Все инструменты; каждое изменение требует подтверждения" },
+  { id: "full", label: "Полное доверие", hint: "Все инструменты; поручения выполняются без подтверждений" },
 ];
 
 // Отправка сообщения со стримингом ответа. Promise резолвится, когда
@@ -780,7 +788,7 @@ export function chatStartStream(
   mode: AgentMode,
   onEvent: (e: ChatEvent) => void
 ): Promise<void> {
-  if (demo) return demoPlannedChat(chatId, message, onEvent);
+  if (demo) return demoPlannedChat(chatId, message, mode, onEvent);
 
   const channel = new Channel((msg: unknown) => onEvent(msg as ChatEvent));
   return invoke<void>("chat_start", {
@@ -795,6 +803,18 @@ export function chatStartStream(
 
 // Демо: имитация стримингового ответа с инструментами и markdown
 const demoCancelled = new Set<string>();
+const demoConfirmations = new Map<string, { chatId: string; resolve: (decision: "allow" | "deny") => void }>();
+async function demoApprove(chatId: string, name: string, args: Record<string, unknown>, onEvent: (e: ChatEvent) => void) {
+  const callId = crypto.randomUUID();
+  const key = JSON.stringify([chatId, callId]);
+  const decision = await new Promise<"allow" | "deny">((resolve) => {
+    demoConfirmations.set(key, { chatId, resolve });
+    onEvent({ type: "confirm_request", call_id: callId, name, args });
+  });
+  demoConfirmations.delete(key);
+  onEvent({ type: "confirm_result", call_id: callId, decision });
+  return decision === "allow" && !demoCancelled.has(chatId);
+}
 
 function demoChatStart(
   chatId: string,
@@ -919,7 +939,7 @@ if (demo) {
 function persistDemoPlans() {
   try { localStorage.setItem("hh-demo-todos", JSON.stringify({ plans: [...demoPlans], history: [...demoTodoHistory], chats: mock.chats_list })); } catch { /* Demo storage may be disabled. */ }
 }
-async function demoPlannedChat(chatId: string, message: string, onEvent: (e: ChatEvent) => void) {
+async function demoPlannedChat(chatId: string, message: string, mode: AgentMode, onEvent: (e: ChatEvent) => void) {
   demoCancelled.delete(chatId);
   let questionDemo = /резюме|вопрос|форм[ау]/i.test(message) && !/продолжи/i.test(message);
   const titles = questionDemo ? ["Определить направление задачи", "Уточнить пожелания", "Прочитать знания о пользователе", "Показать результат демонстрации"]
@@ -929,15 +949,24 @@ async function demoPlannedChat(chatId: string, message: string, onEvent: (e: Cha
   if (!plan) {
     plan = { id: `plan-${crypto.randomUUID()}`, title: questionDemo ? "Подготовка резюме · Демонстрация" : "Исследование запроса · Демонстрация", archived: false, revision: 1, created_at: Date.now() / 1000, updated_at: Date.now() / 1000,
       items: titles.map((text, i) => ({ id: `step-${i + 1}`, text, status: i === 0 ? "in_progress" : "pending", note: "" })) };
-    demoPlans.set(chatId, [...(demoPlans.get(chatId) || []), plan]);
   }
   const planId = plan.id;
-  const emitPlan = (statuses?: TodoStatus[], note = "") => {
-    const plans = demoPlans.get(chatId);
-    if (!plans) return;
-    plan = { ...plan!, revision: plan!.revision + 1, updated_at: Date.now() / 1000,
+  let planDenied = false;
+  const emitPlan = async (statuses?: TodoStatus[], note = "") => {
+    if (mode === "chat" || planDenied || demoCancelled.has(chatId)) return;
+    const plans = demoPlans.get(chatId) || [];
+    const creating = !plans.some((p) => p.id === planId);
+    const nextPlan: TodoPlan = { ...plan!, revision: creating ? 1 : plan!.revision + 1, updated_at: Date.now() / 1000,
       items: plan!.items.map((item, i) => ({ ...item, status: statuses?.[i] || item.status, note: statuses?.[i] === "blocked" ? note : item.status === "blocked" ? "" : item.note })) };
-    demoPlans.set(chatId, plans.map((p) => p.id === planId ? plan! : p));
+    const args = creating ? { title: nextPlan.title, items: nextPlan.items }
+      : { plan_id: planId, revision: plan!.revision, title: nextPlan.title, items: nextPlan.items, archived: nextPlan.archived };
+    if (mode === "confirm" && !await demoApprove(chatId, creating ? "create_todo_plan" : "update_todo_plan", args, onEvent)) {
+      planDenied = true;
+      return;
+    }
+    if (demoCancelled.has(chatId)) return;
+    plan = nextPlan;
+    demoPlans.set(chatId, creating ? [...plans, plan] : plans.map((p) => p.id === planId ? plan! : p));
     persistDemoPlans(); onEvent({ type: "todo_plan_updated", plan });
   };
   const chats = mock.chats_list as ChatSummary[];
@@ -946,26 +975,34 @@ async function demoPlannedChat(chatId: string, message: string, onEvent: (e: Cha
   history.push({ role: "user", content: message }); demoTodoHistory.set(chatId, history);
   let content = "";
   let questionsCancelled = false;
-  emitPlan();
-  const receive = (event: ChatEvent) => {
+  await emitPlan();
+  if (demoCancelled.has(chatId)) { onEvent({ type: "cancelled" }); return; }
+  let eventQueue = Promise.resolve();
+  const processEvent = async (event: ChatEvent) => {
     if (demoCancelled.has(chatId) && event.type !== "cancelled") {
       if (event.type === "done") onEvent({ type: "cancelled" });
       return;
     }
     if (event.type === "delta") content += event.content;
-    if (event.type === "question_request") emitPlan(["completed", "blocked", "pending", "pending"], "Нужны ответы на форму уточнений");
+    if (event.type === "question_request") await emitPlan(["completed", "blocked", "pending", "pending"], "Нужны ответы на форму уточнений");
     if (event.type === "question_result") {
       questionsCancelled = Boolean(event.result.cancelled);
-      emitPlan(questionsCancelled ? ["completed", "blocked", "pending", "pending"] : ["completed", "completed", "in_progress", "pending"], "Уточнения отменены пользователем");
+      await emitPlan(questionsCancelled ? ["completed", "blocked", "pending", "pending"] : ["completed", "completed", "in_progress", "pending"], "Уточнения отменены пользователем");
     }
-    if (event.type === "tool_start" && event.name === "web_search") emitPlan(["completed", "in_progress", "pending"]);
-    if (event.type === "tool_end" && event.name === "web_search") emitPlan(["completed", "completed", "in_progress"]);
-    if (event.type === "tool_end" && event.name === "read_profile") emitPlan(["completed", "completed", "completed", "in_progress"]);
-    if (event.type === "done" && !questionsCancelled) emitPlan(plan!.items.map(() => "completed"));
+    if (event.type === "tool_start" && event.name === "web_search") await emitPlan(["completed", "in_progress", "pending"]);
+    if (event.type === "tool_end" && event.name === "web_search") await emitPlan(["completed", "completed", "in_progress"]);
+    if (event.type === "tool_end" && event.name === "read_profile") await emitPlan(["completed", "completed", "completed", "in_progress"]);
+    if (event.type === "done" && !questionsCancelled) await emitPlan(plan!.items.map(() => "completed"));
+    if (demoCancelled.has(chatId)) {
+      if (event.type === "done" || event.type === "question_request") onEvent({ type: "cancelled" });
+      return;
+    }
     onEvent(event);
   };
+  const receive = (event: ChatEvent) => { eventQueue = eventQueue.then(() => processEvent(event)); };
   try { await (questionDemo ? demoQuestionChat(chatId, receive) : demoChatStart(chatId, message, receive)); }
   finally {
+    await eventQueue;
     if (demoTodoHistory.has(chatId)) { history.push({ role: "assistant", content: content || "Остановлено." }); persistDemoPlans(); }
   }
 }

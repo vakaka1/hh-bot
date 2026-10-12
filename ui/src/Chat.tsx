@@ -254,7 +254,6 @@ export default function Chat({
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickBottomRef = useRef(true);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const allowedNamesRef = useRef<Set<string>>(new Set());
   const activeChatIdRef = useRef<string | null>(currentId);
   activeChatIdRef.current = currentId;
   const deletedChatsRef = useRef<Set<string>>(new Set());
@@ -517,11 +516,6 @@ export default function Chat({
               ),
             })); break;
           case "confirm_request": {
-            // «всегда разрешать» — отвечаем молча, без карточки
-            if (allowedNamesRef.current.has(e.name)) {
-              api.chatConfirm(targetId, e.call_id, "allow");
-              return visible;
-            }
             result = patchLast((e0) => ({
               ...e0,
               confirms: [
@@ -580,6 +574,12 @@ export default function Chat({
           default:
             result = prev;
         }
+        if (e.type === "done" || e.type === "error" || e.type === "cancelled") {
+          result = result.map((entry) => ({
+            ...entry,
+            confirms: entry.confirms?.map((c) => c.status === "pending" ? { ...c, status: "denied" as const } : c),
+          }));
+        }
         entriesByChatRef.current.set(targetId, result);
         if (e.type === "done" || e.type === "error" || e.type === "cancelled") {
           runningChatsRef.current.delete(targetId);
@@ -625,7 +625,7 @@ export default function Chat({
     try {
       // модель хранится как «провайдер::модель» — запрос уходит её провайдеру
       const sel = parseModelValue(chatModel);
-      await api.chatStartStream(id, message, sel.model, sel.provider, fresh && mode === "chat" ? "confirm" : mode, (event) => handleEvent(id, event));
+      await api.chatStartStream(id, message, sel.model, sel.provider, mode, (event) => handleEvent(id, event));
     } catch (e) {
       handleEvent(id, { type: "error", message: String(e) });
     } finally {
@@ -640,7 +640,6 @@ export default function Chat({
   useEffect(() => {
     if (!launchRequest || launchedRef.current === launchRequest.id) return;
     launchedRef.current = launchRequest.id;
-    if (mode === "chat") onMode("confirm");
     void send(launchRequest.message, true);
   }, [launchRequest]);
 
@@ -662,13 +661,8 @@ export default function Chat({
     if (currentId && runningChatsRef.current.has(currentId)) api.chatStop(currentId);
   }
 
-  // «Всегда разрешать» — в рамках чата запоминаем выбранный тип действия
-  function decide(c: ConfirmRun, decision: "allow" | "allow_always" | "deny") {
-    if (decision === "allow_always") {
-      allowedNamesRef.current.add(c.name);
-    }
-    if (currentId) handleEvent(currentId, { type: "confirm_result", call_id: c.call_id, decision: decision === "deny" ? "deny" : "allow" });
-    if (currentId) api.chatConfirm(currentId, c.call_id, decision === "deny" ? "deny" : "allow");
+  function decide(c: ConfirmRun, decision: "allow" | "deny") {
+    if (currentId) void api.chatConfirm(currentId, c.call_id, decision);
   }
 
   function pickModel(m: string) {
@@ -737,7 +731,8 @@ export default function Chat({
         type="button"
         className={"composer-mode-btn" + (modeMenuOpen ? " open" : "")}
         onClick={() => setModeMenuOpen((o) => !o)}
-        title={currentModeInfo.hint}
+        disabled={runningChatIds.size > 0}
+        title={runningChatIds.size > 0 ? "Остановите выполнение перед сменой режима" : currentModeInfo.hint}
         aria-expanded={modeMenuOpen}
       >
         <CurrentModeIcon size={15} />
@@ -756,6 +751,7 @@ export default function Chat({
                 type="button"
                 className={"composer-mode-item" + (isSel ? " active" : "")}
                 onClick={() => {
+                  if (runningChatsRef.current.size > 0) return;
                   onMode(m.id);
                   setModeMenuOpen(false);
                 }}
@@ -1051,7 +1047,7 @@ function AgentMessage({
 }: {
   m: ChatEntry;
   onToggle: () => void;
-  onDecide: (c: ConfirmRun, d: "allow" | "allow_always" | "deny") => void;
+  onDecide: (c: ConfirmRun, d: "allow" | "deny") => void;
 }) {
   const [copied, setCopied] = useState(false);
   const process = m.parts.filter((p) => p.kind !== "text");
@@ -1144,13 +1140,6 @@ function AgentMessage({
                 <div className="confirm-btns">
                   <button className="ghost-btn small" onClick={() => onDecide(c, "deny")}>
                     Запретить
-                  </button>
-                  <button
-                    className="ghost-btn small"
-                    onClick={() => onDecide(c, "allow_always")}
-                    title="Разрешать это действие и дальше без вопросов"
-                  >
-                    Всегда
                   </button>
                   <button className="btn-primary small" onClick={() => onDecide(c, "allow")}>
                     Разрешить
