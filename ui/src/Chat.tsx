@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { api, AgentStore, AgentMode, AGENT_MODES, ChatEvent, ChatSummary, ModelEntry, loadAllModels, parseModelValue, PendingQuestion } from "./api";
+import { api, AgentStore, AgentMode, AGENT_MODES, ChatEvent, ChatSummary, ModelEntry, loadAllModels, parseModelValue, PendingQuestion, TodoPlan as Plan } from "./api";
 import ModelSelect from "./ModelSelect";
 import Markdown from "./Markdown";
 import QuestionForm from "./QuestionForm";
+import TodoPlan from "./TodoPlan";
 import {
   BookmarkCheck, BookmarkPlus, BookmarkX, BriefcaseBusiness, BrainCircuit, Check, ChevronDown,
   CalendarClock, CircleUserRound, Copy, FileCheck, FileSearch, FileText, Files,
@@ -56,6 +57,9 @@ function toolLabel(name: string, args?: Record<string, unknown>): string {
   }
   if (name === "current_datetime") return "Проверяет дату и время";
   if (name === "ask_questions") return "Уточняет детали";
+  if (name === "create_todo_plan") return "Составляет план задачи";
+  if (name === "update_todo_plan") return "Обновляет план и отмечает прогресс";
+  if (name === "read_todo_plans") return "Проверяет сохранённые планы";
   if (name === "create_resume") return "Создаёт резюме";
   if (name === "update_resume") return "Обновляет резюме";
   if (name === "set_resume_skill_levels") return "Сохраняет уровни навыков";
@@ -123,7 +127,7 @@ function toolIcon(name: string) {
   if (name === "send_chat_message") return Send;
   if (name === "list_chats" || name === "read_chat") return MessageSquareText;
   if (name === "search_vacancies") return BriefcaseBusiness;
-  if (name === "ask_questions") return ListChecks;
+  if (["ask_questions", "create_todo_plan", "update_todo_plan", "read_todo_plans"].includes(name)) return ListChecks;
   if (name === "create_resume" || name === "update_resume" || name === "set_resume_skill_levels") return FileText;
   if (name === "resume_reference") return FileSearch;
   if (name === "list_resumes") return Files;
@@ -178,7 +182,7 @@ function restoreParts(m: {
       return parts;
     }
   }
-  return m.content ? [{ kind: "text", text: m.content }] : [];
+  return m.content ? [{ kind: "text", text: m.content, final: true }] : [];
 }
 
 function newChatId(): string {
@@ -210,6 +214,8 @@ export default function Chat({
   onTheme: (t: "light" | "dark" | "system") => void;
   onNavigate: (tab: "chat" | "vacancies" | "hhchats" | "knowledge" | "profile" | "settings") => void;
 }) {
+  const [plansByChat, setPlansByChat] = useState<Record<string, Plan[]>>({});
+  const [planErrors, setPlanErrors] = useState<Record<string, string>>({});
   const [questions, setQuestions] = useState<Record<string, PendingQuestion>>({});
   const [answerDrafts, setAnswerDrafts] = useState<Record<string, Record<string, string>>>({});
   const launchedRef = useRef<number | null>(null);
@@ -251,6 +257,7 @@ export default function Chat({
   const allowedNamesRef = useRef<Set<string>>(new Set());
   const activeChatIdRef = useRef<string | null>(currentId);
   activeChatIdRef.current = currentId;
+  const deletedChatsRef = useRef<Set<string>>(new Set());
   const entriesByChatRef = useRef<Map<string, ChatEntry[]>>(new Map());
   const runningChatsRef = useRef<Set<string>>(new Set());
   const [runningChatIds, setRunningChatIds] = useState<Set<string>>(new Set());
@@ -317,7 +324,10 @@ export default function Chat({
   // очистка истории из настроек: обновляем список и закрываем открытый чат
   useEffect(() => {
     const onCleared = () => {
+      for (const id of entriesByChatRef.current.keys()) deletedChatsRef.current.add(id);
       setChats([]);
+      setPlansByChat({});
+      setPlanErrors({});
       setQuestions({});
       setAnswerDrafts({});
       entriesByChatRef.current.clear();
@@ -338,10 +348,27 @@ export default function Chat({
   }
   useLayoutEffect(() => scrollToEnd(), [entries]);
 
+  async function loadPlans(id: string) {
+    if (deletedChatsRef.current.has(id)) return;
+    try {
+      const plans = await api.chatTodoPlans(id);
+      if (deletedChatsRef.current.has(id)) return;
+      setPlansByChat((prev) => {
+        const merged = new Map(plans.map((p) => [p.id, p]));
+        for (const p of prev[id] || []) {
+          if (!merged.has(p.id) || p.revision > merged.get(p.id)!.revision) merged.set(p.id, p);
+        }
+        return { ...prev, [id]: [...merged.values()] };
+      });
+      setPlanErrors((prev) => { const next = { ...prev }; delete next[id]; return next; });
+    } catch (error) { if (!deletedChatsRef.current.has(id)) setPlanErrors((prev) => ({ ...prev, [id]: String(error) })); }
+  }
+
   function openChat(id: string) {
     if (id === currentId) return;
     setCurrentId(id);
     setStreaming(runningChatsRef.current.has(id));
+    void loadPlans(id);
     const cached = entriesByChatRef.current.get(id);
     if (cached) setEntries(cached);
     api
@@ -368,7 +395,10 @@ export default function Chat({
     e.stopPropagation();
     if (runningChatsRef.current.has(id)) api.chatStop(id);
     api.chatDelete(id).then(() => {
+      deletedChatsRef.current.add(id);
       setChats((cs) => cs.filter((c) => c.id !== id));
+      entriesByChatRef.current.delete(id);
+      setPlansByChat((prev) => { const next = { ...prev }; delete next[id]; return next; });
       if (currentId === id) {
         setCurrentId(null);
         setEntries([]);
@@ -378,6 +408,17 @@ export default function Chat({
 
   const handleEvent = useCallback(
     (targetId: string, e: ChatEvent) => {
+      if (deletedChatsRef.current.has(targetId)) return;
+      if (e.type === "todo_plan_updated") {
+        setPlansByChat((prev) => {
+          const plans = prev[targetId] || [];
+          const existing = plans.find((p) => p.id === e.plan.id);
+          if (existing && existing.revision >= e.plan.revision) return prev;
+          return { ...prev, [targetId]: existing ? plans.map((p) => p.id === e.plan.id ? e.plan : p) : [...plans, e.plan] };
+        });
+        setPlanErrors((prev) => { const next = { ...prev }; delete next[targetId]; return next; });
+        return;
+      }
       if (e.type === "question_request") {
         setQuestions((prev) => ({ ...prev, [targetId]: { call_id: e.call_id, form: e.form } }));
         const previous = entriesByChatRef.current.get(targetId) || [];
@@ -592,6 +633,7 @@ export default function Chat({
       setRunningChatIds(new Set(runningChatsRef.current));
       setStreaming(runningChatsRef.current.has(activeChatIdRef.current || ""));
       refreshChats();
+      void loadPlans(id);
     }
   }
 
@@ -883,6 +925,8 @@ export default function Chat({
         )}
 
         <div className="chat-composer-wrap">
+          {currentId && (plansByChat[currentId]?.length || 0) > 0 && <TodoPlan key={currentId} plans={plansByChat[currentId]} working={runningChatIds.has(currentId)} onResume={(plan) => void send(`Продолжи выполнение сохранённого плана «${plan.title}». Сначала проверь его актуальное состояние и выполни оставшиеся шаги.`)} />}
+          {currentId && planErrors[currentId] && <div className="status err" role="alert">Не удалось загрузить план: {planErrors[currentId]} <button className="ghost-btn small" onClick={() => void loadPlans(currentId)}>Повторить</button></div>}
           {pendingQuestion ? <QuestionForm key={answerKey} request={pendingQuestion} answers={answerDrafts[answerKey] || {}} onChange={(answers) => setAnswerDrafts((prev) => ({ ...prev, [answerKey]: answers }))} onSubmit={answerQuestion} onStop={stop} /> : <div className={"chat-composer" + (isMultiline ? " multiline" : "")}>
             <textarea
               ref={inputRef}

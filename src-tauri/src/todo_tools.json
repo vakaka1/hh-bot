@@ -1,0 +1,148 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "create_todo_plan",
+      "description": "Создать сохраняемый todo-план текущей задачи для сложной работы из нескольких этапов. Пользователь видит план и галочки в чате. Не требует подтверждения, доступно во всех режимах. Только один незавершённый план; сначала прочитай существующие планы.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 60,
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "Постоянный ID шага: латинские буквы, цифры, дефис, подчёркивание. Сохраняй ID при изменениях."
+                },
+                "text": {
+                  "type": "string",
+                  "maxLength": 600
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "pending",
+                    "in_progress",
+                    "completed",
+                    "blocked",
+                    "cancelled"
+                  ]
+                },
+                "note": {
+                  "type": "string",
+                  "maxLength": 2000,
+                  "description": "Результат или причина блокировки / отмены. Для blocked обязательна непустая заметка."
+                }
+              },
+              "required": [
+                "id",
+                "text",
+                "status"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "title",
+          "items"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "update_todo_plan",
+      "description": "Обновить весь todo-план текущей задачи: статусы, заметки, заголовок, порядок, добавление и удаление шагов, архивирование или возврат из архива. Передай ВСЕ шаги, сохраняя ID существующих. Пропущенные шаги удалятся; выполненные обычно сохраняй, ненужные отмечай cancelled. Не более одного in_progress. Используй актуальную revision. completed означает реально выполненную работу.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "plan_id": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 60,
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "Постоянный ID шага: латинские буквы, цифры, дефис, подчёркивание. Сохраняй ID при изменениях."
+                },
+                "text": {
+                  "type": "string",
+                  "maxLength": 600
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "pending",
+                    "in_progress",
+                    "completed",
+                    "blocked",
+                    "cancelled"
+                  ]
+                },
+                "note": {
+                  "type": "string",
+                  "maxLength": 2000,
+                  "description": "Результат или причина блокировки / отмены. Для blocked обязательна непустая заметка."
+                }
+              },
+              "required": [
+                "id",
+                "text",
+                "status"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "archived": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "plan_id",
+          "revision",
+          "title",
+          "items",
+          "archived"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "read_todo_plans",
+      "description": "Прочитать все планы текущего чата, включая архив, постоянные ID шагов и текущие revision. Планы других чатов недоступны.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    }
+  }
+]

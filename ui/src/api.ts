@@ -171,6 +171,17 @@ export function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<
       pending.resolve({ answers: args?.answers as Record<string, string>, cancelled: Boolean(args?.cancelled) });
       return Promise.resolve(undefined as T);
     }
+    if (cmd === "chat_get") return Promise.resolve((demoTodoHistory.get(String(args?.chatId)) || []) as T);
+    if (cmd === "chat_delete") {
+      const id = String(args?.chatId);
+      mock.chats_list = (mock.chats_list as ChatSummary[]).filter((c) => c.id !== id);
+      demoPlans.delete(id); demoTodoHistory.delete(id); persistDemoPlans();
+      return Promise.resolve(undefined as T);
+    }
+    if (cmd === "chats_clear") {
+      demoPlans.clear(); demoTodoHistory.clear(); mock.chats_list = []; persistDemoPlans();
+      return Promise.resolve(undefined as T);
+    }
     if (cmd in mock) return Promise.resolve(mock[cmd] as T);
   }
   const tauri = (window as unknown as { __TAURI__?: { core: { invoke: Function } } }).__TAURI__;
@@ -628,6 +639,7 @@ export const api = {
   agentTest: (config: AgentConfig) =>
     invoke<{ models: string[] }>("agent_test", { config }),
   chatsList: () => invoke<ChatSummary[]>("chats_list"),
+  chatTodoPlans: (chatId: string) => demo ? Promise.resolve(demoPlans.get(chatId) || []) : invoke<TodoPlan[]>("chat_todo_plans", { chatId }),
   chatGet: (chatId: string) => invoke<StoredChatMsg[]>("chat_get", { chatId }),
   chatDelete: (chatId: string) => invoke<void>("chat_delete", { chatId }),
   chatsClear: () => invoke<void>("chats_clear"),
@@ -635,7 +647,7 @@ export const api = {
     invoke<void>("chat_rename", { chatId, title }),
   chatStop: (chatId: string) => {
     if (demo) {
-      demoAborted = true;
+      demoCancelled.add(chatId);
       const pending = demoQuestions.get(chatId);
       if (pending) { demoQuestions.delete(chatId); pending.resolve({ answers: {}, cancelled: true }); }
       return Promise.resolve();
@@ -727,12 +739,20 @@ export interface QuestionForm {
 }
 export interface PendingQuestion { call_id: string; form: QuestionForm }
 
+export type TodoStatus = "pending" | "in_progress" | "completed" | "blocked" | "cancelled";
+export interface TodoItem { id: string; text: string; status: TodoStatus; note: string }
+export interface TodoPlan {
+  id: string; title: string; items: TodoItem[]; archived: boolean;
+  revision: number; created_at: number; updated_at: number;
+}
+
 export type ChatEvent =
+  | { type: "todo_plan_updated"; plan: TodoPlan }
   | { type: "question_request"; call_id: string; form: QuestionForm }
   | { type: "question_result"; call_id: string; result: { cancelled?: boolean; answers?: { id: string; question: string; answer: string }[] } }
   | { type: "delta"; content: string }
   | { type: "reasoning"; content: string }
-  | { type: "tool_start"; call_id?: string; name: string; args?: { query?: string; url?: string; theme?: string; tab?: string } }
+  | { type: "tool_start"; call_id?: string; name: string; args?: Record<string, unknown> }
   | { type: "tool_end"; call_id?: string; name: string; result?: string }
   | { type: "confirm_request"; call_id: string; name: string; args?: Record<string, unknown> }
   | { type: "confirm_result"; call_id: string; decision: string }
@@ -760,7 +780,7 @@ export function chatStartStream(
   mode: AgentMode,
   onEvent: (e: ChatEvent) => void
 ): Promise<void> {
-  if (demo) return /резюме|вопрос|форм[ау]/i.test(message) ? demoQuestionChat(chatId, onEvent) : demoChatStart(message, onEvent);
+  if (demo) return demoPlannedChat(chatId, message, onEvent);
 
   const channel = new Channel((msg: unknown) => onEvent(msg as ChatEvent));
   return invoke<void>("chat_start", {
@@ -774,17 +794,18 @@ export function chatStartStream(
 }
 
 // Демо: имитация стримингового ответа с инструментами и markdown
-let demoAborted = false;
+const demoCancelled = new Set<string>();
 
 function demoChatStart(
+  chatId: string,
   message: string,
   onEvent: (e: ChatEvent) => void
 ): Promise<void> {
   const sleep = (ms: number) =>
     new Promise<boolean>((r) =>
-      setTimeout(() => r(demoAborted), ms)
+      setTimeout(() => r(demoCancelled.has(chatId)), ms)
     );
-  demoAborted = false;
+  demoCancelled.delete(chatId);
   return (async () => {
     if (await sleep(400)) {
       onEvent({ type: "cancelled" });
@@ -856,7 +877,7 @@ const coverLetter = \`Здравствуйте! Мой опыт — \${years} л
 const demoQuestions = new Map<string, { call_id: string; resolve: (answer: { answers: Record<string, string>; cancelled: boolean }) => void }>();
 async function demoQuestionChat(chatId: string, onEvent: (e: ChatEvent) => void) {
   const chats = mock.chats_list as ChatSummary[];
-  chats.unshift({ id: chatId, title: "Создание резюме", updated_at: Date.now() / 1000 });
+  if (!chats.some((chat) => chat.id === chatId)) chats.unshift({ id: chatId, title: "Создание резюме", updated_at: Date.now() / 1000 });
   const call_id = `question-${chatId}`;
   const form: QuestionForm = { title: "Уточним новое резюме", questions: [
     { id: "role", label: "На какую должность готовим резюме?", options: ["Frontend-разработчик", "Fullstack-разработчик", "Тимлид"], required: true },
@@ -868,6 +889,7 @@ async function demoQuestionChat(chatId: string, onEvent: (e: ChatEvent) => void)
   const response = new Promise<{ answers: Record<string, string>; cancelled: boolean }>((resolve) => demoQuestions.set(chatId, { call_id, resolve }));
   onEvent({ type: "question_request", call_id, form });
   const answer = await response;
+  if (demoCancelled.has(chatId)) { onEvent({ type: "cancelled" }); return; }
   const result = answer.cancelled ? { cancelled: true } : { answers: form.questions.map((q) => ({ id: q.id, question: q.label, answer: answer.answers[q.id] || "" })) };
   onEvent({ type: "question_result", call_id, result });
   onEvent({ type: "tool_end", name: "ask_questions", call_id, result: JSON.stringify(result) });
@@ -878,4 +900,72 @@ async function demoQuestionChat(chatId: string, onEvent: (e: ChatEvent) => void)
   }
   onEvent({ type: "delta", content: answer.cancelled ? "Форма отменена. Создание резюме не выполнялось." : "Подготовка продолжена с учётом уточнений. Это демонстрация интерфейса; резюме на hh.ru не создавалось." });
   onEvent({ type: "done" });
+}
+
+
+// Demo exercises the same plan events and persists them without account requests.
+const demoPlans = new Map<string, TodoPlan[]>();
+const demoTodoHistory = new Map<string, StoredChatMsg[]>();
+if (demo) {
+  try {
+    const stored = JSON.parse(localStorage.getItem("hh-demo-todos") || "null");
+    if (stored) {
+      for (const [id, plans] of stored.plans || []) demoPlans.set(id, plans);
+      for (const [id, history] of stored.history || []) demoTodoHistory.set(id, history);
+      mock.chats_list = stored.chats || [];
+    }
+  } catch { /* A broken demo cache must not prevent the app from opening. */ }
+}
+function persistDemoPlans() {
+  try { localStorage.setItem("hh-demo-todos", JSON.stringify({ plans: [...demoPlans], history: [...demoTodoHistory], chats: mock.chats_list })); } catch { /* Demo storage may be disabled. */ }
+}
+async function demoPlannedChat(chatId: string, message: string, onEvent: (e: ChatEvent) => void) {
+  demoCancelled.delete(chatId);
+  let questionDemo = /резюме|вопрос|форм[ау]/i.test(message) && !/продолжи/i.test(message);
+  const titles = questionDemo ? ["Определить направление задачи", "Уточнить пожелания", "Прочитать знания о пользователе", "Показать результат демонстрации"]
+    : ["Разобрать запрос", "Найти информацию", "Подготовить итоговый ответ"];
+  let plan = [...(demoPlans.get(chatId) || [])].reverse().find((p) => !p.archived && p.items.some((i) => !["completed", "cancelled"].includes(i.status)));
+  if (plan?.title === "Подготовка резюме · Демонстрация") questionDemo = true;
+  if (!plan) {
+    plan = { id: `plan-${crypto.randomUUID()}`, title: questionDemo ? "Подготовка резюме · Демонстрация" : "Исследование запроса · Демонстрация", archived: false, revision: 1, created_at: Date.now() / 1000, updated_at: Date.now() / 1000,
+      items: titles.map((text, i) => ({ id: `step-${i + 1}`, text, status: i === 0 ? "in_progress" : "pending", note: "" })) };
+    demoPlans.set(chatId, [...(demoPlans.get(chatId) || []), plan]);
+  }
+  const planId = plan.id;
+  const emitPlan = (statuses?: TodoStatus[], note = "") => {
+    const plans = demoPlans.get(chatId);
+    if (!plans) return;
+    plan = { ...plan!, revision: plan!.revision + 1, updated_at: Date.now() / 1000,
+      items: plan!.items.map((item, i) => ({ ...item, status: statuses?.[i] || item.status, note: statuses?.[i] === "blocked" ? note : item.status === "blocked" ? "" : item.note })) };
+    demoPlans.set(chatId, plans.map((p) => p.id === planId ? plan! : p));
+    persistDemoPlans(); onEvent({ type: "todo_plan_updated", plan });
+  };
+  const chats = mock.chats_list as ChatSummary[];
+  if (!chats.some((c) => c.id === chatId)) chats.unshift({ id: chatId, title: message.slice(0, 48), updated_at: Date.now() / 1000 });
+  const history = demoTodoHistory.get(chatId) || [];
+  history.push({ role: "user", content: message }); demoTodoHistory.set(chatId, history);
+  let content = "";
+  let questionsCancelled = false;
+  emitPlan();
+  const receive = (event: ChatEvent) => {
+    if (demoCancelled.has(chatId) && event.type !== "cancelled") {
+      if (event.type === "done") onEvent({ type: "cancelled" });
+      return;
+    }
+    if (event.type === "delta") content += event.content;
+    if (event.type === "question_request") emitPlan(["completed", "blocked", "pending", "pending"], "Нужны ответы на форму уточнений");
+    if (event.type === "question_result") {
+      questionsCancelled = Boolean(event.result.cancelled);
+      emitPlan(questionsCancelled ? ["completed", "blocked", "pending", "pending"] : ["completed", "completed", "in_progress", "pending"], "Уточнения отменены пользователем");
+    }
+    if (event.type === "tool_start" && event.name === "web_search") emitPlan(["completed", "in_progress", "pending"]);
+    if (event.type === "tool_end" && event.name === "web_search") emitPlan(["completed", "completed", "in_progress"]);
+    if (event.type === "tool_end" && event.name === "read_profile") emitPlan(["completed", "completed", "completed", "in_progress"]);
+    if (event.type === "done" && !questionsCancelled) emitPlan(plan!.items.map(() => "completed"));
+    onEvent(event);
+  };
+  try { await (questionDemo ? demoQuestionChat(chatId, receive) : demoChatStart(chatId, message, receive)); }
+  finally {
+    if (demoTodoHistory.has(chatId)) { history.push({ role: "assistant", content: content || "Остановлено." }); persistDemoPlans(); }
+  }
 }

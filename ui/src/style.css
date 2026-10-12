@@ -3630,3 +3630,45 @@ main.vac-page {
 .question-stop { display: inline-flex; padding: 8px; }
 main.profile-page { max-width: 1200px; width: 100%; }
 .chat-item-waiting { flex-shrink: 0; color: var(--accent); }
+
+/* Сохраняемый рабочий план агента, рядом с полем сообщения. */
+.todo-plan { margin: 0 0 10px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); overflow: hidden; }
+.todo-plan-head { display: flex; width: 100%; align-items: center; gap: 10px; padding: 12px 15px; border: 0; background: none; color: var(--text); text-align: left; font: inherit; cursor: pointer; }
+.todo-plan-head:hover { background: var(--surface-2); }
+.todo-plan-icon { color: var(--accent); flex-shrink: 0; }
+.todo-plan.finished .todo-plan-icon { color: var(--ok); }
+.todo-plan-heading { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
+.todo-plan-eyebrow { display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: 11px; }
+.todo-plan-status { padding-left: 8px; border-left: 1px solid var(--border-strong); }
+.todo-plan-title { font-size: 13px; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.todo-plan-count { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.todo-plan-chevron { flex-shrink: 0; color: var(--muted); transform: rotate(-90deg); transition: transform .2s; }
+.todo-plan-chevron.open { transform: rotate(0); }
+.todo-plan-progress { height: 2px; background: var(--border); }
+.todo-plan-progress > span { display: block; height: 100%; background: var(--accent); transition: width .25s ease; }
+.todo-plan.finished .todo-plan-progress > span { background: var(--ok); }
+.todo-plan-items { list-style: none; margin: 0; padding: 7px 15px; max-height: min(230px, 28vh); overflow-y: auto; overscroll-behavior: contain; }
+.todo-item { display: flex; align-items: flex-start; gap: 10px; padding: 7px 0; }
+.todo-item-mark { display: flex; align-items: center; justify-content: center; flex: 0 0 17px; width: 17px; height: 19px; color: var(--muted); }
+.todo-item.completed .todo-item-mark { height: 16px; margin-top: 1px; border-radius: 5px; color: var(--surface); background: var(--ok); }
+.todo-item.in_progress .todo-item-mark, .todo-item.blocked .todo-item-mark { color: var(--accent); }
+.todo-item-mark .tool-spinner { width: 14px; height: 14px; }
+.todo-item-content { min-width: 0; flex: 1; }
+.todo-item-line { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.todo-item-text { font-size: 12.5px; line-height: 1.5; overflow-wrap: anywhere; }
+.todo-item.in_progress .todo-item-text { font-weight: 550; }
+.todo-item.completed .todo-item-text { color: var(--muted); }
+.todo-item.cancelled .todo-item-text { color: var(--muted); text-decoration: line-through; }
+.todo-item-status { font-size: 10px; color: var(--muted); white-space: nowrap; }
+.todo-item.blocked .todo-item-status { color: var(--accent); }
+.todo-item-note { margin: 3px 0 0; color: var(--muted); font-size: 11.5px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.todo-plan-footer { display: flex; gap: 8px; align-items: center; padding: 7px 13px; border-top: 1px solid var(--border); }
+.todo-plan-footnote { color: var(--muted); font-size: 11px; margin-right: auto; }
+.todo-plan-footer select { flex: 1; min-width: 0; max-width: 100%; border: 0; background: var(--surface); color: var(--muted); font: inherit; font-size: 11px; padding: 3px 0; cursor: pointer; }
+.todo-plan-action { display: inline-flex; align-items: center; justify-content: center; gap: 5px; padding: 5px 6px; border: 0; border-radius: 6px; background: none; color: var(--muted); font: inherit; font-size: 11px; cursor: pointer; flex-shrink: 0; }
+.todo-plan-action:hover { background: var(--surface-2); color: var(--text); }
+.todo-plan-action.resume { color: var(--accent); }
+.todo-plan-current { padding: 8px 15px; color: var(--muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.todo-plan button:focus-visible, .todo-plan select:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
+@media (max-width: 600px) { .todo-plan-head { padding: 10px 12px; } .todo-plan-items { padding: 5px 12px; max-height: 22vh; } }
+@media (prefers-reduced-motion: reduce) { .todo-plan-progress > span, .todo-plan-chevron { transition: none; } }
