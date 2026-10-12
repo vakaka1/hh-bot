@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { BrainCircuit, Plus, Tag } from "lucide-react";
-import { api, isDemo, AgentConfig, AgentMode, AgentStore, Me, ProfileData, Resume, resumeHidden } from "./api";
+import { api, isDemo, AgentConfig, AgentMode, AgentStore, Me, ProfileData } from "./api";
 import Chat from "./Chat";
+import Resumes from "./Resumes";
 import Vacancies from "./Vacancies";
 import Chats from "./Chats";
 import Knowledge from "./Knowledge";
@@ -108,14 +109,9 @@ function LoginScreen({ onDone }: { onDone: () => void }) {
 
 // ---------------------------------------------------------------- профиль: знания о пользователе
 
-function Profile({ onNavigate }: { onNavigate?: (tab: Tab) => void }) {
+function Profile({ onNavigate, onCreateResume }: { onNavigate?: (tab: Tab) => void; onCreateResume: () => void }) {
   const [me, setMe] = useState<Me | null>(null);
   const [meErr, setMeErr] = useState("");
-  const [resumes, setResumes] = useState<Resume[] | null>(null);
-  const [resErr, setResErr] = useState("");
-  const [unpublishing, setUnpublishing] = useState<string | null>(null);
-  const [resAction, setResAction] = useState<{ text: string; ok: boolean } | null>(null);
-
   const [profile, setProfile] = useState<ProfileData>({});
   const [statusBusy, setStatusBusy] = useState(false);
   const [statusErr, setStatusErr] = useState("");
@@ -129,21 +125,8 @@ function Profile({ onNavigate }: { onNavigate?: (tab: Tab) => void }) {
     }
   }
 
-  async function loadResumes() {
-    setResErr("");
-    setResumes(null);
-    setResAction(null);
-    try {
-      const data = await api.getResumes();
-      setResumes(data.items || []);
-    } catch (e) {
-      setResErr(String(e));
-    }
-  }
-
   useEffect(() => {
     loadMe();
-    loadResumes();
     api
       .profileLoad()
       .then((d) => setProfile(d || {}))
@@ -170,68 +153,14 @@ function Profile({ onNavigate }: { onNavigate?: (tab: Tab) => void }) {
     setProfile((p) => ({ ...p, positions: { ...p.positions, search_status: id } }));
     try {
       await api.setJobSearchStatus(id);
-      const next = { ...profile, positions: { ...profile.positions, search_status: id } };
-      setProfile(next);
-      await api.profileSave(next);
+      const latest = await api.profileLoad();
+      const next = { ...latest, positions: { ...latest.positions, search_status: id } };
+      setProfile(await api.profileSave(next));
     } catch (e) {
       setProfile((p) => ({ ...p, positions: { ...p.positions, search_status: prev } }));
       setStatusErr(String(e));
     } finally {
       setStatusBusy(false);
-    }
-  }
-
-  async function unpublish(r: Resume) {
-    if (!r.id) return;
-    setUnpublishing(r.id);
-    setResAction(null);
-    try {
-      await api.unpublishResume(r.id);
-      setResAction({ text: `Резюме «${r.title}» снято с показа на hh.ru (видимость «не показывать никому»).`, ok: true });
-      await loadResumes();
-    } catch (e) {
-      setResAction({ text: String(e), ok: false });
-    } finally {
-      setUnpublishing(null);
-    }
-  }
-
-  async function publish(r: Resume) {
-    if (!r.id) return;
-    setUnpublishing(r.id);
-    setResAction(null);
-    try {
-      await api.publishResume(r.id);
-      setResAction({ text: `Резюме «${r.title}» опубликовано (видно работодателям).`, ok: true });
-      await loadResumes();
-    } catch (e) {
-      setResAction({ text: String(e), ok: false });
-    } finally {
-      setUnpublishing(null);
-    }
-  }
-
-  async function editResume(r: Resume) {
-    if (!r.id) return;
-    setResAction(null);
-    try {
-      await api.openResumeEditor(r.id);
-      setResAction({ text: `Открыл окно редактирования «${r.title}» на hh.ru.`, ok: true });
-    } catch (e) {
-      setResAction({ text: String(e), ok: false });
-    }
-  }
-
-  async function createResume() {
-    setResAction(null);
-    try {
-      await api.openResumeCreator();
-      setResAction({
-        text: "Открыл форму создания резюме на hh.ru. Попросите агента в чате подготовить тексты из знаний о вас — их можно вставить в форму.",
-        ok: true,
-      });
-    } catch (e) {
-      setResAction({ text: String(e), ok: false });
     }
   }
 
@@ -366,75 +295,7 @@ function Profile({ onNavigate }: { onNavigate?: (tab: Tab) => void }) {
         </div>
       </div>
 
-      <div className="card">
-        <div className="card-head">
-          <h2>Мои резюме</h2>
-          <div className="row gap">
-            <button className="btn-primary small" onClick={createResume} title="Открыть форму создания резюме на hh.ru">
-              Создать резюме
-            </button>
-            <button className="ghost-btn small" onClick={loadResumes}>
-              Обновить
-            </button>
-          </div>
-        </div>
-        {resErr && <p className="status err">{resErr}</p>}
-        {!resumes && !resErr && <p className="hint">Загрузка…</p>}
-        {resumes && resumes.length === 0 && <p className="hint">Резюме не найдены.</p>}
-        {resumes && resumes.length > 0 && (
-          <p className="hint">
-            Резюме подгружены с hh.ru. Попросите агента в чате подготовить тексты для нового или
-            обновлённого резюме — он соберёт их из знаний о вас.
-          </p>
-        )}
-        {resumes &&
-          resumes.map((r) => (
-            <div className="resume-item" key={r.id || r.title}>
-              <div className="title">{r.title}</div>
-              <div className="meta">
-                <span
-                  className={
-                    "badge " + (!resumeHidden(r) && r.status?.id === "published" ? "published" : "")
-                  }
-                >
-                  {resumeHidden(r) ? "Снято с публикации" : r.status?.name || r.status?.id || ""}
-                </span>
-                Обновлено: {(r.updated_at || "").slice(0, 10)} · просмотры: {r.views ?? "—"} ·
-                отклики: {r.new_messages ?? "—"}
-              </div>
-              {!resumeHidden(r) && r.status?.id === "published" && r.id && (
-                <button
-                  className="ghost-btn small unpublish-btn"
-                  onClick={() => unpublish(r)}
-                  disabled={unpublishing === r.id}
-                  title="Снять резюме с публикации на hh.ru"
-                >
-                  {unpublishing === r.id ? "Снимаем…" : "Снять с публикации"}
-                </button>
-              )}
-              {resumeHidden(r) && r.status?.id === "published" && r.id && (
-                <button
-                  className="ghost-btn small unpublish-btn"
-                  onClick={() => publish(r)}
-                  disabled={unpublishing === r.id}
-                  title="Вернуть резюме на публикацию на hh.ru"
-                >
-                  {unpublishing === r.id ? "Публикуем…" : "Опубликовать"}
-                </button>
-              )}
-              {r.id && (
-                <button
-                  className="ghost-btn small"
-                  onClick={() => editResume(r)}
-                  title="Редактировать резюме на hh.ru (откроется окно hh.ru)"
-                >
-                  Редактировать
-                </button>
-              )}
-            </div>
-          ))}
-        {resAction && <p className={"status " + (resAction.ok ? "ok" : "err")}>{resAction.text}</p>}
-      </div>
+      <Resumes onCreate={onCreateResume} />
     </div>
   );
 }
@@ -644,6 +505,7 @@ function SearchCard({
 export default function App() {
   const { theme, setTheme } = useTheme();
   const [screen, setScreen] = useState<Screen>("loading");
+  const [resumeRequest, setResumeRequest] = useState<{ id: number; message: string } | null>(null);
   const [tab, setTab] = useState<Tab>("chat");
   const [providersOpen, setProvidersOpen] = useState(false);
   const [store, setStore] = useState<AgentStore>({ providers: [], active: null });
@@ -739,10 +601,12 @@ export default function App() {
         tab === "vacancies" ? "vac-page" :
         tab === "hhchats" ? "hhch-page" :
         tab === "knowledge" ? "know-page" :
+        tab === "profile" ? "profile-page" :
         tab === "settings" ? (providersOpen ? "providers-page" : "settings-page") : ""
       }>
         <div style={{ display: tab === "chat" ? "contents" : "none" }}>
           <Chat
+            launchRequest={resumeRequest}
             store={store}
             mode={agentMode}
             onMode={changeAgentMode}
@@ -753,7 +617,7 @@ export default function App() {
         {tab === "vacancies" && <Vacancies />}
         {tab === "hhchats" && <Chats />}
         {tab === "knowledge" && <Knowledge onNavigate={setTab} />}
-        {tab === "profile" && <Profile onNavigate={setTab} />}
+        {tab === "profile" && <Profile onNavigate={setTab} onCreateResume={() => { setTab("chat"); setResumeRequest({ id: Date.now(), message: "Помоги создать резюме на hh.ru на основе знаний обо мне. Уточни недостающие сведения через форму вопросов, покажи итоговый текст и создай скрытое резюме без публикации." }); }} />}
         {tab === "settings" && (
           providersOpen ? (
             <ProvidersManager

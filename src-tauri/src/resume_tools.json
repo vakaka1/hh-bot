@@ -1,0 +1,1129 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "create_resume",
+      "description": "Создать скрытое резюме на hh.ru. Сначала прочитай знания и уточни недостающие факты формой ask_questions. Покажи итоговый текст перед созданием. Используй один стабильный request_id для одного резюме, не повторяй создание при неоднозначной сетевой ошибке. Возвращает id сервера; публикация — отдельный инструмент. Ошибки API не означают успешное создание. Использует мобильный API: сначала создаётся черновик с id, затем заполняются шаги. При ошибке заполнения продолжай этот черновик, не создавай новый.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "description": "Уникальный ключ операции (латинские буквы, цифры, дефис), сохраняй при повторе"
+          },
+          "resume": {
+            "type": "object",
+            "properties": {
+              "title": {
+                "type": "string"
+              },
+              "first_name": {
+                "type": "string"
+              },
+              "last_name": {
+                "type": "string"
+              },
+              "middle_name": {
+                "type": "string"
+              },
+              "birth_date": {
+                "type": "string"
+              },
+              "skills": {
+                "type": "string"
+              },
+              "area": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id"
+                ]
+              },
+              "gender": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id"
+                ]
+              },
+              "resume_locale": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id"
+                ]
+              },
+              "travel_time": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id"
+                ]
+              },
+              "business_trip_readiness": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id"
+                ]
+              },
+              "professional_roles": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id"
+                  ]
+                }
+              },
+              "citizenship": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id"
+                  ]
+                }
+              },
+              "work_ticket": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id"
+                  ]
+                }
+              },
+              "employments": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id"
+                  ]
+                }
+              },
+              "schedules": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id"
+                  ]
+                }
+              },
+              "driver_license_types": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id"
+                  ]
+                }
+              },
+              "skill_set": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "salary": {
+                "type": "object",
+                "properties": {
+                  "amount": {
+                    "type": "number"
+                  },
+                  "currency": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "amount",
+                  "currency"
+                ]
+              },
+              "education": {
+                "type": "object",
+                "properties": {
+                  "level": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id"
+                    ]
+                  },
+                  "primary": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "description": "Существующий id записи образования из мобильного профиля; для нового можно опустить"
+                        },
+                        "name": {
+                          "type": "string",
+                          "description": "Название учебного заведения"
+                        },
+                        "name_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "organization": {
+                          "type": "string",
+                          "description": "Факультет или направление"
+                        },
+                        "result": {
+                          "type": "string",
+                          "description": "Специальность или профиль подготовки, не статус «окончил»"
+                        },
+                        "year": {
+                          "type": "integer",
+                          "description": "Год окончания"
+                        },
+                        "education_level": {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "id"
+                          ],
+                          "description": "Уровень именно этого заведения: bachelor, master, higher, unfinished_higher, special_secondary и др. из education_level"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "year",
+                        "education_level"
+                      ]
+                    }
+                  },
+                  "elementary": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "description": "Существующий id записи образования из мобильного профиля; для нового можно опустить"
+                        },
+                        "name": {
+                          "type": "string",
+                          "description": "Название учебного заведения"
+                        },
+                        "organization": {
+                          "type": "string",
+                          "description": "Факультет или направление"
+                        },
+                        "result": {
+                          "type": "string",
+                          "description": "Специальность или профиль подготовки, не статус «окончил»"
+                        },
+                        "year": {
+                          "type": "integer",
+                          "description": "Год окончания"
+                        },
+                        "level": {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "id"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "year"
+                      ]
+                    }
+                  },
+                  "additional": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "description": "Существующий id записи образования из мобильного профиля; для нового можно опустить"
+                        },
+                        "name": {
+                          "type": "string",
+                          "description": "Название учебного заведения"
+                        },
+                        "organization": {
+                          "type": "string",
+                          "description": "Факультет или направление"
+                        },
+                        "result": {
+                          "type": "string",
+                          "description": "Специальность или профиль подготовки, не статус «окончил»"
+                        },
+                        "year": {
+                          "type": "integer",
+                          "description": "Год окончания"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "year"
+                      ]
+                    }
+                  },
+                  "attestation": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "description": "Существующий id записи образования из мобильного профиля; для нового можно опустить"
+                        },
+                        "name": {
+                          "type": "string",
+                          "description": "Название учебного заведения"
+                        },
+                        "organization": {
+                          "type": "string",
+                          "description": "Факультет или направление"
+                        },
+                        "result": {
+                          "type": "string",
+                          "description": "Специальность или профиль подготовки, не статус «окончил»"
+                        },
+                        "year": {
+                          "type": "integer",
+                          "description": "Год окончания"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "year"
+                      ]
+                    }
+                  }
+                },
+                "description": "Массивы заменяются целиком. У каждого primary обязателен свой education_level, общий level не заменяет его. name — заведение, organization — факультет/направление, result — специальность, year — числовой год окончания. Сохраняй существующие id записей, если они уже есть в мобильном профиле."
+              },
+              "relocation": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id"
+                    ]
+                  },
+                  "area": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id"
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "description": "Готовность к переезду: no_relocation, relocation_possible, relocation_desirable. Используй только подтверждённое желание пользователя."
+              },
+              "experience": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              },
+              "contact": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              },
+              "language": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              },
+              "site": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              },
+              "has_vehicle": {
+                "type": "boolean"
+              },
+              "work_format": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id"
+                  ]
+                },
+                "description": "Современный формат работы из resume_work_format: ON_SITE, REMOTE, HYBRID и т.д. Удалёнка задаётся здесь."
+              },
+              "employment_form": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id"
+                  ]
+                },
+                "description": "Современная занятость из resume_employment_form: FULL, PART и т.д."
+              },
+              "skill_levels": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 30,
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "description": "Название из resume_reference(kind=skill_levels)"
+                    },
+                    "level": {
+                      "type": "string",
+                      "enum": [
+                        "base",
+                        "middle",
+                        "advanced"
+                      ],
+                      "description": "Базовый, средний или продвинутый уровень самооценки; задавай только по указанию пользователя"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "level"
+                  ]
+                },
+                "description": "Уровни навыков сохраняются отдельным действием после текста резюме. Языковые уровни не меняются; тесты и сертификаты не заявляются."
+              }
+            },
+            "additionalProperties": false,
+            "description": "Поля мобильного API hh.ru. education.primary: name (заведение), organization (факультет), result (специальность), year (число), education_level:{id} для каждой записи. work_format:[{id:REMOTE|ON_SITE|HYBRID}]; employment_form:[{id:FULL|PART}]. experience: company, position, start/end YYYY-MM-DD, description; language:[{id,level:{id}}]; contact:[{type:{id:email|cell},value:string|{formatted:string},preferred:boolean}]. Массивы заменяются целиком. Только реальные сведения пользователя; не выдумывай готовность к переезду. skill_levels:[{name,level:base|middle|advanced}] — самооценка навыков; обрабатывается отдельным запросом и проверяется через skills_with_levels."
+          }
+        },
+        "required": [
+          "request_id",
+          "resume"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "update_resume",
+      "description": "Изменить содержимое резюме на hh.ru. Перед изменением прочитай read_resume. Передавай только изменяемые поля; массивы заменяются полностью. Публикация и видимость не меняются.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "resume_id": {
+            "type": "string"
+          },
+          "resume": {
+            "type": "object",
+            "properties": {
+              "title": {
+                "type": "string"
+              },
+              "first_name": {
+                "type": "string"
+              },
+              "last_name": {
+                "type": "string"
+              },
+              "middle_name": {
+                "type": "string"
+              },
+              "birth_date": {
+                "type": "string"
+              },
+              "skills": {
+                "type": "string"
+              },
+              "area": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id"
+                ]
+              },
+              "gender": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id"
+                ]
+              },
+              "resume_locale": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id"
+                ]
+              },
+              "travel_time": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id"
+                ]
+              },
+              "business_trip_readiness": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id"
+                ]
+              },
+              "professional_roles": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id"
+                  ]
+                }
+              },
+              "citizenship": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id"
+                  ]
+                }
+              },
+              "work_ticket": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id"
+                  ]
+                }
+              },
+              "employments": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id"
+                  ]
+                }
+              },
+              "schedules": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id"
+                  ]
+                }
+              },
+              "driver_license_types": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id"
+                  ]
+                }
+              },
+              "skill_set": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "salary": {
+                "type": "object",
+                "properties": {
+                  "amount": {
+                    "type": "number"
+                  },
+                  "currency": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "amount",
+                  "currency"
+                ]
+              },
+              "education": {
+                "type": "object",
+                "properties": {
+                  "level": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id"
+                    ]
+                  },
+                  "primary": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "description": "Существующий id записи образования из мобильного профиля; для нового можно опустить"
+                        },
+                        "name": {
+                          "type": "string",
+                          "description": "Название учебного заведения"
+                        },
+                        "name_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "organization": {
+                          "type": "string",
+                          "description": "Факультет или направление"
+                        },
+                        "result": {
+                          "type": "string",
+                          "description": "Специальность или профиль подготовки, не статус «окончил»"
+                        },
+                        "year": {
+                          "type": "integer",
+                          "description": "Год окончания"
+                        },
+                        "education_level": {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "id"
+                          ],
+                          "description": "Уровень именно этого заведения: bachelor, master, higher, unfinished_higher, special_secondary и др. из education_level"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "year",
+                        "education_level"
+                      ]
+                    }
+                  },
+                  "elementary": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "description": "Существующий id записи образования из мобильного профиля; для нового можно опустить"
+                        },
+                        "name": {
+                          "type": "string",
+                          "description": "Название учебного заведения"
+                        },
+                        "organization": {
+                          "type": "string",
+                          "description": "Факультет или направление"
+                        },
+                        "result": {
+                          "type": "string",
+                          "description": "Специальность или профиль подготовки, не статус «окончил»"
+                        },
+                        "year": {
+                          "type": "integer",
+                          "description": "Год окончания"
+                        },
+                        "level": {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "id"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "year"
+                      ]
+                    }
+                  },
+                  "additional": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "description": "Существующий id записи образования из мобильного профиля; для нового можно опустить"
+                        },
+                        "name": {
+                          "type": "string",
+                          "description": "Название учебного заведения"
+                        },
+                        "organization": {
+                          "type": "string",
+                          "description": "Факультет или направление"
+                        },
+                        "result": {
+                          "type": "string",
+                          "description": "Специальность или профиль подготовки, не статус «окончил»"
+                        },
+                        "year": {
+                          "type": "integer",
+                          "description": "Год окончания"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "year"
+                      ]
+                    }
+                  },
+                  "attestation": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "description": "Существующий id записи образования из мобильного профиля; для нового можно опустить"
+                        },
+                        "name": {
+                          "type": "string",
+                          "description": "Название учебного заведения"
+                        },
+                        "organization": {
+                          "type": "string",
+                          "description": "Факультет или направление"
+                        },
+                        "result": {
+                          "type": "string",
+                          "description": "Специальность или профиль подготовки, не статус «окончил»"
+                        },
+                        "year": {
+                          "type": "integer",
+                          "description": "Год окончания"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "year"
+                      ]
+                    }
+                  }
+                },
+                "description": "Массивы заменяются целиком. У каждого primary обязателен свой education_level, общий level не заменяет его. name — заведение, organization — факультет/направление, result — специальность, year — числовой год окончания. Сохраняй существующие id записей, если они уже есть в мобильном профиле."
+              },
+              "relocation": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id"
+                    ]
+                  },
+                  "area": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id"
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "description": "Готовность к переезду: no_relocation, relocation_possible, relocation_desirable. Используй только подтверждённое желание пользователя."
+              },
+              "experience": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              },
+              "contact": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              },
+              "language": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              },
+              "site": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              },
+              "has_vehicle": {
+                "type": "boolean"
+              },
+              "work_format": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id"
+                  ]
+                },
+                "description": "Современный формат работы из resume_work_format: ON_SITE, REMOTE, HYBRID и т.д. Удалёнка задаётся здесь."
+              },
+              "employment_form": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id"
+                  ]
+                },
+                "description": "Современная занятость из resume_employment_form: FULL, PART и т.д."
+              },
+              "skill_levels": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 30,
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "description": "Название из resume_reference(kind=skill_levels)"
+                    },
+                    "level": {
+                      "type": "string",
+                      "enum": [
+                        "base",
+                        "middle",
+                        "advanced"
+                      ],
+                      "description": "Базовый, средний или продвинутый уровень самооценки; задавай только по указанию пользователя"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "level"
+                  ]
+                },
+                "description": "Уровни навыков сохраняются отдельным действием после текста резюме. Языковые уровни не меняются; тесты и сертификаты не заявляются."
+              }
+            },
+            "additionalProperties": false,
+            "description": "Поля мобильного API hh.ru. education.primary: name (заведение), organization (факультет), result (специальность), year (число), education_level:{id} для каждой записи. work_format:[{id:REMOTE|ON_SITE|HYBRID}]; employment_form:[{id:FULL|PART}]. experience: company, position, start/end YYYY-MM-DD, description; language:[{id,level:{id}}]; contact:[{type:{id:email|cell},value:string|{formatted:string},preferred:boolean}]. Массивы заменяются целиком. Только реальные сведения пользователя; не выдумывай готовность к переезду. skill_levels:[{name,level:base|middle|advanced}] — самооценка навыков; обрабатывается отдельным запросом и проверяется через skills_with_levels."
+          }
+        },
+        "required": [
+          "resume_id",
+          "resume"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "resume_reference",
+      "description": "Получить справочники для резюме. Для условий kind=conditions укажи resume_id: требования и шаги читаются из мобильного профиля существующего черновика. Для areas/professional_roles нужен query. Не угадывай id. kind=profile с resume_id возвращает существующее образование с id записей и текущие значения, чтобы корректно редактировать их. kind=skill_levels с resume_id возвращает ID, текущие уровни профессиональных навыков и доступные уровни.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "conditions",
+              "dictionaries",
+              "professional_roles",
+              "areas",
+              "languages",
+              "profile",
+              "skill_levels"
+            ]
+          },
+          "query": {
+            "type": "string"
+          },
+          "resume_id": {
+            "type": "string",
+            "description": "Для kind=conditions обязателен id существующего черновика. Чтение не создаёт черновик."
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "set_resume_skill_levels",
+      "description": "Сохранить уровни самооценки навыков на hh.ru и проверить их. Укажи levels для разных уровней или level для всех навыков (skill_names ограничивает выбор). Сначала прочитай resume_reference(kind=skill_levels). Уровни общие для аккаунта; языки и результаты тестов не меняются. Не предполагай уровень без указания пользователя.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "resume_id": {
+            "type": "string"
+          },
+          "levels": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 30,
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "Название из resume_reference(kind=skill_levels)"
+                },
+                "level": {
+                  "type": "string",
+                  "enum": [
+                    "base",
+                    "middle",
+                    "advanced"
+                  ],
+                  "description": "Базовый, средний или продвинутый уровень самооценки; задавай только по указанию пользователя"
+                }
+              },
+              "required": [
+                "name",
+                "level"
+              ]
+            },
+            "description": "Уровни навыков сохраняются отдельным действием после текста резюме. Языковые уровни не меняются; тесты и сертификаты не заявляются."
+          },
+          "level": {
+            "type": "string",
+            "enum": [
+              "base",
+              "middle",
+              "advanced"
+            ],
+            "description": "Базовый, средний или продвинутый уровень самооценки; задавай только по указанию пользователя"
+          },
+          "skill_names": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 30,
+            "items": {
+              "type": "string"
+            },
+            "description": "Необязательный список выбранных навыков для общего level"
+          }
+        },
+        "required": [
+          "resume_id"
+        ]
+      }
+    }
+  }
+]

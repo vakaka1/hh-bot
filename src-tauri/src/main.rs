@@ -10,6 +10,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::Manager;
 
+mod knowledge;
+mod questions;
+mod resumes;
+
 const HH_AUTHORIZE_URL: &str = "https://hh.ru/oauth/authorize";
 const HH_TOKEN_URL: &str = "https://hh.ru/oauth/token";
 const HH_API_BASE: &str = "https://api.hh.ru";
@@ -300,7 +304,7 @@ async fn hh_post(app: &tauri::AppHandle, path: &str) -> Result<serde_json::Value
     };
     if !status.is_success() {
         let desc = body["description"].as_str().unwrap_or("неизвестная ошибка");
-        return Err(format!("hh.ru API {}: {}", status, desc));
+        return Err(format!("hh.ru API {}: {} {}", status, desc, body.get("errors").map(|v| v.to_string()).unwrap_or_default()));
     }
     Ok(body)
 }
@@ -333,6 +337,12 @@ fn web_action_script(kind: &str, arg: &str) -> String {
         // маршруты (PUT /resumes/{id}/unpublish и пр.) у веб-API нет.
         "unpublish" => r#"[
               { url: '/shards/resume/edit/visibility', method: 'POST', json: { hash: __ARG__, accessType: 'no_one' }, expect: '"success":true' }
+            ]"#,
+        "skill_levels" => r#"[
+              { url: '/shards/applicant/key_skills/levels/update', method: 'PUT', json: { userSkillLevels: JSON.parse(__ARG__) } }
+            ]"#,
+        "publish_visibility" => r#"[
+              { url: '/shards/resume/edit/visibility', method: 'POST', json: { hash: __ARG__, accessType: 'clients' }, expect: '"success":true' }
             ]"#,
         _ => "[]",
     };
@@ -397,12 +407,14 @@ fn web_action_error(results: &serde_json::Value) -> String {
 }
 
 async fn run_web_action(app: &tauri::AppHandle, kind: &str, arg: &str) -> Result<(), String> {
-    if !matches!(kind, "job_search_status" | "unpublish") {
+    if !matches!(kind, "job_search_status" | "unpublish" | "publish_visibility" | "skill_levels") {
         return Err("Неизвестное действие".into());
     }
     if arg.trim().is_empty() {
         return Err("Пустой аргумент действия".into());
     }
+    static WEB_ACTION_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _guard = WEB_ACTION_LOCK.lock().await;
     // если окно от прошлого действия ещё живо — закрываем
     if let Some(w) = app.get_webview_window("webaction") {
         let _ = w.close();
@@ -460,6 +472,9 @@ async fn run_web_action(app: &tauri::AppHandle, kind: &str, arg: &str) -> Result
 
 #[tauri::command]
 async fn web_action(app: tauri::AppHandle, kind: String, arg: String) -> Result<(), String> {
+    if kind == "unpublish" {
+        return resumes::visibility(&app, &arg, false).await;
+    }
     run_web_action(&app, &kind, &arg).await
 }
 
@@ -472,12 +487,10 @@ async fn publish_resume(app: tauri::AppHandle, resume_id: String) -> Result<(), 
     if id.is_empty() || id.contains('/') {
         return Err("Некорректный id резюме".into());
     }
-    hh_post(&app, &format!("/resumes/{}/publish", id)).await.map(|_| ())
+    resumes::visibility(&app, id, true).await
 }
 
-// Редактирование резюме: формы правки живут только на самом hh.ru,
-// поэтому открываем видимое окно приложения со страницей резюме — там
-// кнопка «Редактировать» и карточка видимости; сессия общая с приложением.
+// Ручное редактирование: открываем страницу резюме в общей веб-сессии.
 #[tauri::command]
 async fn open_resume_editor(app: tauri::AppHandle, resume_id: String) -> Result<(), String> {
     let id = resume_id.trim();
@@ -498,12 +511,10 @@ async fn open_resume_editor(app: tauri::AppHandle, resume_id: String) -> Result<
     Ok(())
 }
 
-// Создание нового резюме: api.hh.ru резюме не создаёт, форма есть только
-// на сайте — открываем видимое окно с пустой формой создания; сессия
-// общая с приложением, тексты для вставки агент готовит в чате.
+// Запасной путь: актуальная форма hh.ru для ручного создания.
 #[tauri::command]
 async fn open_resume_creator(app: tauri::AppHandle) -> Result<(), String> {
-    let url: tauri::Url = "https://hh.ru/applicant/resumes/form"
+    let url: tauri::Url = "https://hh.ru/applicant/resumes/new"
         .parse()
         .map_err(|_| "Некорректный адрес формы резюме".to_string())?;
     if let Some(w) = app.get_webview_window("resumeweb") {
@@ -543,16 +554,38 @@ fn profile_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 
 // Разовая миграция старого «Обо мне» (about.json) в профиль.
 // Старый файл сохраняется как about.json.bak.
-fn load_profile(app: &tauri::AppHandle) -> serde_json::Value {
-    let path = profile_path(app).unwrap_or_default();
+fn profile_lock() -> &'static Mutex<()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    &LOCK
+}
+
+fn read_profile_store(app: &tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let _guard = profile_lock().lock().map_err(|e| e.to_string())?;
+    load_profile(app)
+}
+
+// Call with profile_lock held. All readers and writers share this lock.
+fn load_profile(app: &tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let path = profile_path(app)?;
     // профиль — единое хранилище знаний: список заметок-фактов. Всё, что
-    // знает агент, видно и редактируемо на вкладке «Профиль»; удалил
+    // знает агент, видно и редактируемо на вкладке «Знания»; удалил
     // заметку — агент этого больше не знает.
     let mut profile = json!({ "notes": [] });
 
-    if let Some(p) = read_json::<serde_json::Value>(path.clone()) {
+    let stored = match std::fs::read_to_string(&path) {
+        Ok(text) => Some(serde_json::from_str::<serde_json::Value>(&text)
+            .map_err(|e| format!("Не удалось прочитать знания: {e}"))?),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(format!("Не удалось прочитать знания: {e}")),
+    };
+    if let Some(p) = stored {
+        if !p.is_object() { return Err("Повреждён профиль".into()); }
+        profile = p.clone();
         // разовая конвертация старого профиля: структурные поля -> заметки
-        let mut notes: Vec<serde_json::Value> = p["notes"].as_array().cloned().unwrap_or_default();
+        let mut notes: Vec<serde_json::Value> = match p.get("notes") {
+            Some(value) => value.as_array().cloned().ok_or("Повреждён список знаний")?,
+            None => Vec::new(),
+        };
         let push_note = |topic: &str, text: String, notes: &mut Vec<serde_json::Value>| {
             let t = text.trim();
             if !t.is_empty() {
@@ -626,8 +659,17 @@ fn load_profile(app: &tauri::AppHandle) -> serde_json::Value {
             push_note("О себе", s.to_string(), &mut notes);
         }
         profile["notes"] = json!(notes);
-        let _ = write_json(path, &profile);
-        return profile;
+        for key in ["experience", "education", "skills", "languages", "wishes", "about"] {
+            profile.as_object_mut().unwrap().remove(key);
+        }
+        if let Some(positions) = profile["positions"].as_object_mut() {
+            for key in ["desired_title", "area", "salary", "employment", "schedule"] {
+                positions.remove(key);
+            }
+        }
+        knowledge::normalize(&mut profile)?;
+        if profile != p { save_profile(app, &mut profile)?; }
+        return Ok(profile);
     }
 
     // профиля ещё нет — переносим данные из старого «Обо мне»
@@ -664,20 +706,48 @@ fn load_profile(app: &tauri::AppHandle) -> serde_json::Value {
             }
         }
         profile["notes"] = json!(notes);
-        let _ = std::fs::rename(about_path(app).unwrap_or_default(), about_path(app).unwrap_or_default().with_extension("json.bak"));
     }
-    let _ = write_json(path, &profile);
-    profile
+    knowledge::normalize(&mut profile)?;
+    save_profile(app, &mut profile)?;
+    let about = about_path(app)?;
+    if about.exists() {
+        std::fs::rename(&about, about.with_extension("json.bak")).map_err(|e| e.to_string())?;
+    }
+    Ok(profile)
+}
+
+// Atomic replacement prevents an interrupted write from truncating the knowledge base.
+fn save_profile(app: &tauri::AppHandle, profile: &mut serde_json::Value) -> Result<(), String> {
+    save_profile_file(profile_path(app)?, profile)
+}
+
+fn save_profile_file(path: PathBuf, profile: &mut serde_json::Value) -> Result<(), String> {
+    knowledge::normalize(profile)?;
+    profile["revision"] = json!(profile["revision"].as_u64().unwrap_or(0).saturating_add(1));
+    let temp = path.with_extension("json.tmp");
+    write_json(temp.clone(), profile)?;
+    std::fs::rename(temp, path).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn profile_load(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
-    Ok(load_profile(&app))
+    read_profile_store(&app)
 }
 
 #[tauri::command]
-fn profile_save(app: tauri::AppHandle, data: serde_json::Value) -> Result<(), String> {
-    write_json(profile_path(&app)?, &data)
+fn profile_save(app: tauri::AppHandle, mut data: serde_json::Value) -> Result<serde_json::Value, String> {
+    let _guard = profile_lock().lock().map_err(|e| e.to_string())?;
+    let current = load_profile(&app)?;
+    check_profile_revision(&current, &data)?;
+    save_profile(&app, &mut data)?;
+    Ok(data)
+}
+
+fn check_profile_revision(current: &serde_json::Value, data: &serde_json::Value) -> Result<(), String> {
+    if data["revision"] != current["revision"] {
+        return Err("Знания уже изменились. Открой раздел заново и повтори изменение.".into());
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------- agents (много провайдеров)
@@ -839,6 +909,8 @@ fn chat_get(app: tauri::AppHandle, chat_id: String) -> Vec<ChatMsg> {
 
 #[tauri::command]
 fn chat_delete(app: tauri::AppHandle, chat_id: String) -> Result<(), String> {
+    chat_stop(chat_id.clone());
+    questions::clear(&chat_id);
     let mut chats = load_chats(&app);
     chats.retain(|c| c.id != chat_id);
     save_chats(&app, &chats)
@@ -847,6 +919,10 @@ fn chat_delete(app: tauri::AppHandle, chat_id: String) -> Result<(), String> {
 // полная очистка истории чатов
 #[tauri::command]
 fn chats_clear(app: tauri::AppHandle) -> Result<(), String> {
+    for (id, flag) in cancel_flags().lock().expect("mutex").iter() {
+        flag.store(true, Ordering::Relaxed);
+        questions::clear(id);
+    }
     save_chats(&app, &Vec::new())
 }
 
@@ -1311,7 +1387,7 @@ const TOOLS_JSON: &str = r#"[
     "type": "function",
     "function": {
       "name": "read_profile",
-      "description": "Прочитать локальный профиль пользователя: условия работы, навыки, опыт, образование, проекты, «о себе», заметки-факты. Используй, когда для ответа нужны сведения о пользователе.",
+      "description": "Прочитать все знания о пользователе без ограничения числа заметок: постоянные ID, темы и полный текст фактов. Для поиска и страниц используй list_knowledge, для чтения отдельной записи — read_knowledge.",
       "parameters": { "type": "object", "properties": {} }
     }
   },
@@ -1352,7 +1428,7 @@ const TOOLS_JSON: &str = r#"[
     "type": "function",
     "function": {
       "name": "prepare_resume_texts",
-      "description": "Подготовить тексты для резюме hh.ru из локального профиля пользователя: название, ключевые навыки, описания мест работы, «О себе». Возвращает черновик для вставки в форму на hh.ru (API hh.ru не даёт создавать резюме автоматически).",
+      "description": "Подготовить тексты для резюме hh.ru из локального профиля пользователя: название, ключевые навыки, описания мест работы, «О себе». Возвращает черновик для вставки в форму на hh.ru. Для создания в чате используй create_resume.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -1450,7 +1526,7 @@ const APP_TOOLS_JSON: &str = r#"[
     "type": "function",
     "function": {
       "name": "edit_resume",
-      "description": "Открыть окно редактирования резюме на hh.ru (название, опыт, навыки, зарплата и т.д.). api.hh.ru не умеет менять содержимое резюме, поэтому правка делается пользователем в открывшемся окне. Сообщи пользователю, что окно открыто.",
+      "description": "Открыть окно редактирования резюме на hh.ru (название, опыт, навыки, зарплата и т.д.). Для изменения через агента используй update_resume; этот инструмент открывает форму для ручной правки. Сообщи пользователю, что окно открыто.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -1557,14 +1633,50 @@ const APP_TOOLS_JSON: &str = r#"[
         "required": ["chat_id", "message"]
       }
     }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "set_theme",
+      "description": "Переключить тему оформления приложения: 'light' (светлая), 'dark' (тёмная) или 'system' (системная, следует теме ОС).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "theme": {
+            "type": "string",
+            "enum": ["light", "dark", "system"],
+            "description": "Тема оформления: light, dark или system"
+          }
+        },
+        "required": ["theme"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "navigate",
+      "description": "Переключить активную вкладку (раздел) приложения: 'chat' (Агент), 'vacancies' (Вакансии), 'hhchats' (Чаты с работодателями), 'knowledge' (Знания о пользователе), 'profile' (Профиль), 'settings' (Настройки).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "tab": {
+            "type": "string",
+            "enum": ["chat", "vacancies", "hhchats", "knowledge", "profile", "settings"],
+            "description": "Идентификатор раздела"
+          }
+        },
+        "required": ["tab"]
+      }
+    }
   }
 ]"#;
 
 // инструменты, меняющие состояние приложения — в режиме confirm требуют подтверждения
 fn is_app_action(name: &str) -> bool {
-    matches!(
+    knowledge::is_write(name) || matches!(
         name,
-        "set_theme" | "navigate" | "update_profile" | "unpublish_resume" | "publish_resume" | "edit_resume"
+        "set_resume_skill_levels" | "create_resume" | "update_resume" | "set_theme" | "navigate" | "update_profile" | "unpublish_resume" | "publish_resume" | "edit_resume"
         | "create_tracking" | "update_tracking" | "delete_tracking" | "send_chat_message"
     )
 }
@@ -1606,7 +1718,7 @@ async fn tool_unpublish_resume(app: &tauri::AppHandle, args: &serde_json::Value)
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
         .ok_or("нет параметра resume_id")?;
-    run_web_action(app, "unpublish", id).await?;
+    resumes::visibility(app, id, false).await?;
     Ok("Резюме снято с показа на hh.ru (видимость «не показывать никому»).".into())
 }
 
@@ -1616,8 +1728,8 @@ async fn tool_publish_resume(app: &tauri::AppHandle, args: &serde_json::Value) -
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
         .ok_or("нет параметра resume_id")?;
-    hh_post(app, &format!("/resumes/{}/publish", id)).await?;
-    Ok("Резюме опубликовано на hh.ru (видимость «видно всем»).".into())
+    resumes::visibility(app, id, true).await?;
+    Ok("Резюме опубликовано на hh.ru и видно зарегистрированным работодателям.".into())
 }
 
 async fn tool_edit_resume(app: &tauri::AppHandle, args: &serde_json::Value) -> Result<String, String> {
@@ -2271,91 +2383,13 @@ async fn tool_read_resume(app: &tauri::AppHandle, args: &serde_json::Value) -> R
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
         .ok_or("нет параметра resume_id")?;
+    let id = resumes::valid_id(id)?;
     let r = hh_get(app, &format!("/resumes/{}", id)).await?;
-    let mut out = String::new();
-    let title = r["title"].as_str().unwrap_or("(без названия)");
-    out.push_str(&format!("Резюме «{}» (id: {})\n", title, id));
-    out.push_str(&format!("Статус: {}. Обновлено: {}\n", r["status"]["name"].as_str().unwrap_or("?"), r["updated_at"].as_str().unwrap_or("").get(..10).unwrap_or("")));
-    // условия — в тех же полях, что и в резюме hh.ru
-    if let Some(a) = r["salary"].as_u64().or(r["salary"]["amount"].as_u64()) {
-        out.push_str(&format!("Зарплата: {} {}\n", a, r["salary"]["currency"].as_str().unwrap_or("RUR")));
-    }
-    if let Some(s) = r["area"]["name"].as_str() {
-        out.push_str(&format!("Город: {}\n", s));
-    }
-    let employment: Vec<&str> = r["employment"].as_array().map(|a| a.iter().filter_map(|x| x["name"].as_str()).collect()).unwrap_or_default();
-    if !employment.is_empty() {
-        out.push_str(&format!("Занятость: {}\n", employment.join(", ")));
-    }
-    let schedule: Vec<&str> = r["schedule"].as_array().map(|a| a.iter().filter_map(|x| x["name"].as_str()).collect()).unwrap_or_default();
-    if !schedule.is_empty() {
-        out.push_str(&format!("График: {}\n", schedule.join(", ")));
-    }
-    let skills: Vec<&str> = r["skill_set"].as_array().map(|a| a.iter().filter_map(|s| s.as_str()).collect()).unwrap_or_default();
-    if !skills.is_empty() {
-        out.push_str(&format!("Ключевые навыки: {}\n", skills.join(", ")));
-    }
-    if let Some(s) = r["about"].as_str().filter(|s| !s.trim().is_empty()) {
-        out.push_str(&format!("\nО себе:\n{}\n", s.trim()));
-    }
-    // описания опыта не обрезаем — агент переносит их в профиль целиком
-    if let Some(items) = r["experience"].as_array().filter(|a| !a.is_empty()) {
-        out.push_str("\nОпыт:\n");
-        for e in items {
-            out.push_str(&format!(
-                "\n### {} | {} | {} — {}\n",
-                e["company"].as_str().unwrap_or("?"),
-                e["position"].as_str().unwrap_or("?"),
-                e["start"].as_str().unwrap_or("?").get(..7).unwrap_or(""),
-                if e["current"].as_bool().unwrap_or(false) { "сейчас".into() } else { e["end"].as_str().unwrap_or("?").get(..7).unwrap_or("").to_string() }
-            ));
-            if let Some(s) = e["company_url"].as_str() {
-                out.push_str(&format!("Сайт компании: {}\n", s));
-            }
-            if let Some(s) = e["description"].as_str().filter(|s| !s.trim().is_empty()) {
-                let text: String = strip_tags(s).split_whitespace().collect::<Vec<_>>().join(" ");
-                let text = text.chars().take(8000).collect::<String>();
-                out.push_str(&text);
-                if !out.ends_with('\n') {
-                    out.push('\n');
-                }
-            }
-        }
-    }
-    if let Some(items) = r["education"]["main"].as_array().filter(|a| !a.is_empty()) {
-        out.push_str("\nОбразование:\n");
-        for e in items {
-            out.push_str(&format!(
-                "- {} | {} | {}{}{}\n",
-                e["name"].as_str().unwrap_or("?"),
-                e["organization"].as_str().unwrap_or(""),
-                e["year"].as_u64().map(|y| y.to_string()).unwrap_or_default(),
-                e["specialty"].as_str().map(|s| format!(" | {}", s)).unwrap_or_default(),
-                e["level"]["name"].as_str().map(|s| format!(" | {}", s)).unwrap_or_default()
-            ));
-        }
-    }
-    if let Some(items) = r["language"].as_array().filter(|a| !a.is_empty()) {
-        let langs: Vec<String> = items
-            .iter()
-            .map(|l| {
-                format!(
-                    "{} — {}",
-                    l["name"].as_str().unwrap_or("?"),
-                    l["level"]["name"].as_str().unwrap_or("?")
-                )
-            })
-            .collect();
-        out.push_str(&format!("\nЯзыки: {}\n", langs.join(", ")));
-    }
-    if let Some(s) = r["citizenship"].as_array().map(|a| a.iter().filter_map(|x| x["name"].as_str()).collect::<Vec<_>>().join(", ")).filter(|s| !s.is_empty()) {
-        out.push_str(&format!("Гражданство: {}\n", s));
-    }
-    Ok(out)
+    // Full data is needed to safely replace arrays such as experience/contact.
+    serde_json::to_string_pretty(&r).map_err(|e| e.to_string())
 }
 
-// Готовые тексты для резюме hh.ru из локального профиля. API hh.ru не
-// даёт создавать и редактировать резюме, поэтому агент готовит тексты,
+// Готовые тексты для ручного заполнения резюме из локального профиля,
 // которые пользователь вставляет в форму на hh.ru.
 fn tool_prepare_resume_texts(args: &serde_json::Value) -> Result<String, String> {
     let position = args["position"]
@@ -2389,32 +2423,6 @@ fn tool_prepare_resume_texts(args: &serde_json::Value) -> Result<String, String>
     Ok(out)
 }
 
-async fn tool_update_profile(app: &tauri::AppHandle, args: &serde_json::Value) -> Result<String, String> {
-    let mut profile = load_profile(app);
-    let notes = profile["notes"].as_array_mut().ok_or("повреждён профиль")?;
-    let topic = args["notes_topic"].as_str().unwrap_or("").trim().to_string();
-    let mut n = 0;
-    if let Some(items) = args["notes_add"].as_array() {
-        for v in items {
-            let text = v.as_str().map(|s| s.trim()).unwrap_or("");
-            if text.is_empty() {
-                continue;
-            }
-            notes.push(json!({
-                "topic": if topic.is_empty() { serde_json::Value::Null } else { json!(topic) },
-                "text": text,
-                "added_at": now(),
-            }));
-            n += 1;
-        }
-    }
-    if n == 0 {
-        return Ok("Ничего не сохранено: не передано ни одного факта.".into());
-    }
-    write_json(profile_path(app)?, &profile)?;
-    Ok(format!("Сохранено в знания: фактов {}. Управлять заметками пользователь может на вкладке «Знания».", n))
-}
-
 // человекочитаемый список знаний для агента (read_profile и системный промпт)
 fn profile_brief(profile: &serde_json::Value, max_notes: usize) -> String {
     let Some(notes) = profile["notes"].as_array() else {
@@ -2431,13 +2439,13 @@ fn profile_brief(profile: &serde_json::Value, max_notes: usize) -> String {
     for n in &notes[skip..] {
         let topic = n["topic"].as_str().unwrap_or("");
         let prefix = if topic.is_empty() { String::new() } else { format!("[{}] ", topic) };
-        out.push_str(&format!("- {}{}\n", prefix, n["text"].as_str().unwrap_or("")));
+        out.push_str(&format!("- (id: {}) {}{}\n", n["id"].as_str().unwrap_or(""), prefix, n["text"].as_str().unwrap_or("")));
     }
     out
 }
 
 async fn tool_read_profile(app: &tauri::AppHandle) -> Result<String, String> {
-    Ok(profile_brief(&load_profile(app), 100))
+    Ok(profile_brief(&read_profile_store(app)?, usize::MAX))
 }
 
 async fn tool_current_datetime() -> String {
@@ -2701,10 +2709,16 @@ async fn run_tool(
         "current_datetime" => Ok(tool_current_datetime().await),
         "fetch_url" => tool_fetch_url(args).await,
         "render_page" => tool_render_page(app, args).await,
+        "create_resume" => resumes::create(app, args).await,
+        "update_resume" => resumes::update(app, args).await,
+        "set_resume_skill_levels" => resumes::set_skill_levels(app, args).await,
+        "resume_reference" => resumes::reference(app, args).await,
         "list_resumes" => tool_list_resumes(app).await,
         "read_resume" => tool_read_resume(app, args).await,
         "read_profile" => tool_read_profile(app).await,
-        "update_profile" => tool_update_profile(app, args).await,
+        "update_profile" | "list_knowledge" | "read_knowledge" | "list_knowledge_topics"
+        | "create_knowledge" | "update_knowledge" | "delete_knowledge"
+        | "rename_knowledge_topic" | "merge_knowledge" => knowledge::execute(app, name, args),
         "search_vacancies" => tool_search_vacancies(app, args).await,
         "list_trackings" => tool_list_trackings(app).await,
         "create_tracking" => tool_create_tracking(app, args).await,
@@ -2779,7 +2793,7 @@ fn resumes_summary(resumes: &serde_json::Value) -> String {
 }
 
 fn build_system_prompt(app: &tauri::AppHandle, model: &str) -> String {
-    let profile = load_profile(app);
+    let profile = read_profile_store(app);
 
     let now_dt = chrono::Local::now();
     let weekdays = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"];
@@ -2810,7 +2824,10 @@ fn build_system_prompt(app: &tauri::AppHandle, model: &str) -> String {
 Когда пользователь просит что-то сделать на hh.ru, прямо говори, что делаешь это от его имени.\n\n\
 ## Что ты знаешь о пользователе\n\n",
     ));
-    p.push_str(&profile_brief(&profile, 40));
+    match &profile {
+        Ok(profile) => p.push_str(&profile_brief(profile, 40)),
+        Err(error) => p.push_str(&format!("Хранилище знаний недоступно: {error}. Не утверждай, что база пуста.\n")),
+    }
     // имя и резюме из hh.ru
     {
         let cache = profile_cache().lock().expect("mutex").clone();
@@ -2829,10 +2846,21 @@ fn build_system_prompt(app: &tauri::AppHandle, model: &str) -> String {
 Ты должен знать о пользователе как можно больше — это твоя база для любых его просьб. \
 Все знания хранятся в одном месте — заметками, и пользователь видит и редактирует их \
 на вкладке «Знания»: удалил заметку — ты этого больше не знаешь. Поэтому всё, что он \
-рассказывает (опыт, навыки, учёбу, желания, обстоятельства), сохраняй через update_profile: \
+рассказывает (опыт, навыки, учёбу, желания, обстоятельства), сохраняй через create_knowledge (update_profile также добавляет заметки): \
 каждый факт — отдельная заметка с темой («Опыт», «Навыки», «Пожелания», «семья» и т.п.), \
 конкретно и без сокращений. Сохраняй только то, что пользователь реально сообщил, без домыслов. \
-После сохранения кратко упомяни, что запомнил. Полный список знаний читай инструментом read_profile. \
+Перед добавлением проверь list_knowledge, чтобы не создавать дубликаты. \
+Для исправления факта или его темы используй update_knowledge по постоянному id из списка, \
+а не добавляй противоречащую заметку. По просьбе забыть сведения удали соответствующие записи \
+через delete_knowledge; не сохраняй удалённый факт снова из истории без новой просьбы пользователя. \
+Для организации знаний используй list_knowledge_topics, rename_knowledge_topic и merge_knowledge. \
+При объединении сохраняй существенные факты исходных записей. \
+Не угадывай ID и не используй порядковые номера: прочитай list_knowledge или read_knowledge. \
+list_knowledge поддерживает поиск, фильтр темы и страницы: читай next_offset до null, \
+когда нужна вся база. read_profile также возвращает полный список. \
+Если пользователь просит удалить все знания, получи все ID и удали их через delete_knowledge. \
+В режиме «Чат» изменения недоступны: предложи включить «Подтверждение» или «Полное доверие». \
+После успешного инструмента кратко упомяни, что изменил; при ошибке не утверждай, что данные сохранены. \
 Эти знания — рабочий материал, а не тема для разговора: не пересказывай пользователю его же данные \
 (имя, статус поиска, содержимое знаний), пока он сам не спросил или это не нужно по делу \
 (например, при составлении резюме). Просто используй их, чтобы отвечать точнее и без лишних вопросов.\n\n\
@@ -2840,16 +2868,24 @@ fn build_system_prompt(app: &tauri::AppHandle, model: &str) -> String {
 о нём или данных явно не хватает, задавай короткие вопросы — 1–3 за раз, не анкету из \
 десяти пунктов, и сразу складывай ответы в знания. Не превращай каждый чат в собеседование: \
 спрашивай только тогда, когда это уместно и действительно пригодится.\n\n\
-## Работа с hh.ru\n\n\
+## Работа с приложением и hh.ru\n\n\
 По просьбе пользователя:\n\
+- переключай тему оформления через set_theme (light, dark, system);\n\
+- открывай нужные разделы приложения через navigate (chat, vacancies, hhchats, knowledge, profile, settings);\n\
 - ищи вакансии через search_vacancies;\n\
 - сохраняй частые поиски как отслеживания через create_tracking (список — list_trackings, \
 изменение — update_tracking, удаление — delete_tracking): они видны на вкладке «Вакансии» \
 и открываются одним нажатием;
 - смотри резюме через list_resumes и read_resume;
 - работай с переписками: список — list_chats, чтение — read_chat, отправка сообщения работодателю — send_chat_message (текст пиши от лица пользователя и заранее показывай его в ответе);\n\
-- готовь тексты для формы резюме из знаний о пользователе через prepare_resume_texts \
-(автоматического создания резюме у hh.ru нет — пользователь вставит их в форму сам);\n\
+- создавай резюме через create_resume, обновляй через update_resume. Сначала прочитай read_profile, \
+при необходимости read_resume и resume_reference. Для образования читай resume_reference(kind=profile): у каждого заведения нужен education_level; name — заведение, organization — факультет, result — специальность, year — год окончания. Удалёнку задавай work_format, занятость — employment_form. Уровни навыков читай через resume_reference(kind=skill_levels), сохраняй через set_resume_skill_levels или update_resume(skill_levels). Это отдельный запрос самооценки, а не обычное поле resume. Не объявляй уровни недоступными из-за ошибки нашего инструмента. Выставляй только уровни, которые пользователь назвал или подтвердил. Готовность к переезду бери из подтверждённых знаний, не меняй её по предположению. Не выдумывай факты, контакты, даты и id справочников. \
+Недостающие сведения спрашивай через ask_questions: форма появится вместо поля ввода, после ответа продолжи задачу. \
+Этот инструмент применяй для уточнений в любых задачах, по 1–3 вопроса за раз. Отмену формы уважай. Ответы уже отображаются на месте вопроса в ходе работы: не повторяй анкету и блок «Ваши ответы» в следующих сообщениях или финальном ответе, используй сведения для выполнения задачи.\n\
+- перед create_resume покажи пользователю содержимое резюме, используй стабильный request_id для одной попытки создания. \
+Создание сохраняет скрытое резюме; публикуй через publish_resume только по просьбе пользователя, \
+снимай с показа через unpublish_resume. Не называй резюме созданным без id от сервера. \
+При недоступности API честно сообщи ошибку и предложи форму сайта; не повторяй неоднозначный POST.\n\
 - при подборе вакансий учитывай знания о пользователе, но уточняй, \
 если запрос неполный.\n",
     );
@@ -3248,6 +3284,8 @@ async fn chat_start(
     .await;
 
     cancel_flags().lock().expect("mutex").remove(&chat_id);
+    pending_confirms().lock().expect("mutex").remove(&chat_id);
+    questions::clear(&chat_id);
 
     match res {
         Ok(()) => Ok(()),
@@ -3301,8 +3339,21 @@ async fn chat_run(
     let history: Vec<serde_json::Value> = conv
         .messages
         .iter()
-        .filter(|m| (m.role == "user" || m.role == "assistant") && !m.content.trim().is_empty() && m.error.is_none())
-        .map(|m| serde_json::json!({ "role": m.role, "content": m.content }))
+        .filter(|m| (m.role == "user" || m.role == "assistant") && !m.content.trim().is_empty())
+        .flat_map(|m| {
+            let mut messages = Vec::new();
+            if let Some(parts) = m.parts.as_ref().and_then(|p| p.as_array()) {
+                for part in parts {
+                    if part["name"] == "ask_questions" {
+                        if let Some(answer) = part["result"].as_str() {
+                            messages.push(json!({"role":"user","content":format!("Ответы на форму вопросов: {}", answer)}));
+                        }
+                    }
+                }
+            }
+            if m.error.is_none() { messages.push(json!({ "role": m.role, "content": m.content })); }
+            messages
+        })
         .collect::<Vec<_>>()
         .into_iter()
         .rev()
@@ -3323,7 +3374,7 @@ async fn chat_run(
     save_chats(app, &chats)?;
 
     // ---- цикл агента (Responses API: instructions + input-элементы)
-    let instructions = build_system_prompt(app, model);
+    let mut instructions = build_system_prompt(app, model);
     // content — простая строка: часть OpenAI-совместимых серверов (vLLM и др.)
     // не принимает массив частей, а строка валидна и для OpenAI
     let to_user_item = |text: &str| -> serde_json::Value {
@@ -3345,7 +3396,7 @@ async fn chat_run(
     input.push(to_user_item(message));
 
     // набор инструментов зависит от режима:
-    //   chat — только поиск в сети; confirm/full — плюс действия в приложении
+    //   chat — чтение и поиск; confirm/full — плюс изменения в приложении
     // объявления инструментов в TOOLS_JSON даны во вложенном формате
     // chat/completions; приводим к плоскому формату Responses API
     // ({type, name, description, parameters})
@@ -3371,8 +3422,12 @@ async fn chat_run(
             .collect()
     };
     let mut tools = collect_tools(TOOLS_JSON);
+    tools.extend(collect_tools(questions::TOOLS));
+    tools.extend(collect_tools(knowledge::READ_TOOLS));
     if mode == "confirm" || mode == "full" {
         tools.extend(collect_tools(APP_TOOLS_JSON));
+        tools.extend(collect_tools(knowledge::WRITE_TOOLS));
+        tools.extend(collect_tools(resumes::TOOLS));
     }
     let tools = json!(tools);
 
@@ -3551,11 +3606,25 @@ async fn chat_run(
                 consecutive_tool_repeats = 0;
             }
 
+            let mut questions_asked = false;
             for call in &result.function_calls {
                 let name = call["name"].as_str().unwrap_or("?").to_string();
                 let args_s = call["arguments"].as_str().unwrap_or("{}").to_string();
                 let args: serde_json::Value = serde_json::from_str(&args_s).unwrap_or(json!({}));
                 let call_id = call["call_id"].as_str().unwrap_or("call").to_string();
+
+                // Remaining calls were prepared before the user answered. Re-plan first.
+                if questions_asked {
+                    input.push(json!({"type":"function_call_output","call_id":call_id,"output":"Не выполнено: сначала учти ответы пользователя из ask_questions и заново выбери необходимые действия."}));
+                    continue;
+                }
+                if name == "ask_questions" { questions_asked = true; }
+
+                // Never execute a model-invented tool unavailable in this mode.
+                if !tools.as_array().map(|ts| ts.iter().any(|t| t["name"] == name)).unwrap_or(false) {
+                    input.push(json!({"type":"function_call_output","call_id":call_id,"output":"Инструмент недоступен в текущем режиме."}));
+                    continue;
+                }
 
                 // Завершаем длительность текущего размышления перед действием.
                 close_thinking(&parts_log, &thinking_started);
@@ -3619,13 +3688,16 @@ async fn chat_run(
                     continue;
                 }
 
-                let _ = on_event.send(serde_json::json!({ "type": "tool_start", "name": name, "args": args }));
+                let _ = on_event.send(serde_json::json!({ "type": "tool_start", "call_id": call_id, "name": name, "args": args }));
                 parts_log.lock().expect("mutex").push(json!({
-                    "kind": "tool", "name": name, "args": args, "status": "running",
+                    "kind": "tool", "call_id": call_id, "name": name, "args": args, "status": "running",
                 }));
                 // «Стоп» должен обрывать работающий инструмент мгновенно:
                 // ожидание отмены выбрасывает run_tool вместе с его сетевым запросом
-                let output = tokio::select! {
+                let output = if name == "ask_questions" {
+                    questions::ask(chat_id, &call_id, &args, cancelled, on_event).await
+                        .unwrap_or_else(|e| format!("Ошибка инструмента: {}", e))
+                } else { tokio::select! {
                     r = tokio::time::timeout(
                         std::time::Duration::from_secs(TOOL_TIMEOUT_SECS),
                         run_tool(app, &name, &args, search_url, on_event),
@@ -3646,15 +3718,19 @@ async fn chat_run(
                     } => {
                         String::new() // недостижимо: ниже проверяем флаг
                     }
-                };
+                }};
                 if cancelled.load(Ordering::Relaxed) {
-                    let _ = on_event.send(serde_json::json!({ "type": "tool_end", "name": name }));
+                    let _ = on_event.send(serde_json::json!({ "type": "tool_end", "call_id": call_id, "name": name }));
                     break;
                 }
+                // A deleted or corrected fact must not remain in the next system prompt.
+                if knowledge::is_write(&name) && !output.starts_with("Ошибка инструмента:") {
+                    instructions = build_system_prompt(app, model);
+                }
                 // для инспекции показываем и ответ инструмента (укороченно)
-                let preview: String = output.chars().take(1500).collect();
+                let preview: String = if name == "ask_questions" { output.clone() } else { output.chars().take(1500).collect() };
                 let _ = on_event.send(serde_json::json!({
-                    "type": "tool_end", "name": name, "result": preview,
+                    "type": "tool_end", "call_id": call_id, "name": name, "result": preview,
                 }));
                 if let Some(p) = parts_log
                     .lock()
@@ -3664,7 +3740,7 @@ async fn chat_run(
                     .find(|p| p["kind"] == "tool" && p["status"] == "running")
                 {
                     *p = json!({
-                        "kind": "tool", "name": name, "args": args, "status": "done",
+                        "kind": "tool", "call_id": call_id, "name": name, "args": args, "status": "done",
                         "result": preview,
                     });
                 }
@@ -3837,6 +3913,8 @@ fn main() {
             chat_start,
             chat_stop,
             chat_confirm,
+            questions::chat_answer,
+            questions::chat_pending_question,
             search_test,
             search_vacancies,
             get_vacancy,
@@ -3929,5 +4007,94 @@ mod dsml_tests {
     #[test]
     fn plain_text_yields_no_calls() {
         assert!(parse_dsml_calls("Обычный ответ <b>без</b> разметки").is_empty());
+    }
+}
+
+#[cfg(test)]
+mod resume_agent_tests {
+    use super::*;
+    #[test]
+    fn tools_are_unique_and_resume_writes_require_confirmation() {
+        let mut names = std::collections::HashSet::new();
+        for source in [TOOLS_JSON, APP_TOOLS_JSON, questions::TOOLS, resumes::TOOLS, knowledge::READ_TOOLS, knowledge::WRITE_TOOLS] {
+            let tools: Vec<serde_json::Value> = serde_json::from_str(source).unwrap();
+            for tool in tools {
+                let name = tool["function"]["name"].as_str().unwrap().to_string();
+                assert!(names.insert(name));
+            }
+        }
+        for name in ["create_resume","update_resume","publish_resume","unpublish_resume"] {
+            assert!(names.contains(name));
+            assert!(is_app_action(name));
+        }
+        assert!(names.contains("ask_questions"));
+        assert!(!is_app_action("ask_questions"));
+        assert!(!is_app_action("resume_reference"));
+    }
+
+    #[test]
+    fn knowledge_reads_and_writes_follow_existing_mode_permissions() {
+        for (source, is_write) in [(knowledge::READ_TOOLS, false), (knowledge::WRITE_TOOLS, true)] {
+            let tools: Vec<serde_json::Value> = serde_json::from_str(source).unwrap();
+            for tool in tools {
+                let name = tool["function"]["name"].as_str().unwrap();
+                assert_eq!(is_app_action(name), is_write, "{name}");
+                assert_eq!(knowledge::is_write(name), is_write, "{name}");
+                assert_eq!(tool["function"]["parameters"]["type"], "object");
+            }
+        }
+        assert!(is_app_action("update_profile"));
+        assert!(!is_app_action("read_profile"));
+    }
+
+    #[test]
+    fn full_profile_read_includes_older_notes_and_ids() {
+        let profile = json!({"notes": (0..137).map(|i| json!({
+            "id": format!("id-{i}"), "text": format!("Факт {i}"), "topic":"Опыт"
+        })).collect::<Vec<_>>()});
+        let full = profile_brief(&profile, usize::MAX);
+        assert!(full.contains("(id: id-0) [Опыт] Факт 0"));
+        assert!(full.contains("(id: id-136) [Опыт] Факт 136"));
+        let brief = profile_brief(&profile, 40);
+        assert!(!brief.contains("(id: id-0)"));
+        assert!(brief.contains("последние 40 из 137"));
+    }
+
+    #[test]
+    fn file_save_preserves_ids_and_rejects_stale_ui_snapshots() {
+        let dir = std::env::temp_dir().join(format!("hh-knowledge-test-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("profile.json");
+        let mut profile = json!({"notes":[{"text":"Первый факт","added_at":10}],"positions":{"search_status":"active_search"}});
+        save_profile_file(path.clone(), &mut profile).unwrap();
+        let stale = profile.clone();
+        let id = profile["notes"][0]["id"].clone();
+        knowledge::mutate(&mut profile, "create_knowledge", &json!({"notes":[{"text":"Второй факт"}]}), 20).unwrap();
+        save_profile_file(path.clone(), &mut profile).unwrap();
+        let current: serde_json::Value = read_json(path.clone()).unwrap();
+        assert!(check_profile_revision(&current, &stale).is_err());
+        assert!(check_profile_revision(&current, &profile).is_ok());
+        assert_eq!(current["notes"][0]["id"], id);
+        assert_eq!(current["notes"].as_array().unwrap().len(), 2);
+        assert_eq!(current["positions"]["search_status"], "active_search");
+        let before = std::fs::read(&path).unwrap();
+        assert!(save_profile_file(path.clone(), &mut json!({"notes":[{"text":false}]})).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(!path.with_extension("json.tmp").exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod skill_level_action_tests {
+    use super::*;
+    #[test]
+    fn skill_levels_action_uses_the_hh_editor_endpoint_and_requires_confirmation() {
+        let args=r#"[{"category":"SKILL","skill_id":53,"level_id":10}]"#;
+        let script=web_action_script("skill_levels",args);
+        assert!(script.contains("/shards/applicant/key_skills/levels/update"));
+        assert!(script.contains("method: 'PUT'"));
+        assert!(script.contains("userSkillLevels: JSON.parse("));
+        assert!(is_app_action("set_resume_skill_levels"));
     }
 }

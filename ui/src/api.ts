@@ -156,7 +156,23 @@ const mock: Record<string, unknown> = {
 };
 
 export function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-  if (demo && cmd in mock) return Promise.resolve(mock[cmd] as T);
+  if (demo) {
+    if (cmd === "publish_resume" || cmd === "web_action" && args?.kind === "unpublish") {
+      const resumes = (mock.get_resumes as { items: Resume[] }).items;
+      const r = resumes.find((r) => r.id === (args?.resumeId || args?.arg));
+      if (r) { r.status = { id: "published", name: "Опубликовано" }; r.access = { type: { id: cmd === "publish_resume" ? "clients" : "no_one" } }; }
+      return Promise.resolve(undefined as T);
+    }
+    if (cmd === "open_resume_creator" || cmd === "open_resume_editor") return Promise.resolve(undefined as T);
+    if (cmd === "chat_answer") {
+      const pending = demoQuestions.get(String(args?.chatId));
+      if (!pending || pending.call_id !== args?.callId) return Promise.reject(new Error("Эта форма уже закрыта"));
+      demoQuestions.delete(String(args?.chatId));
+      pending.resolve({ answers: args?.answers as Record<string, string>, cancelled: Boolean(args?.cancelled) });
+      return Promise.resolve(undefined as T);
+    }
+    if (cmd in mock) return Promise.resolve(mock[cmd] as T);
+  }
   const tauri = (window as unknown as { __TAURI__?: { core: { invoke: Function } } }).__TAURI__;
   if (!tauri) {
     return Promise.reject("Приложение запущено вне Tauri — команды недоступны");
@@ -184,6 +200,7 @@ export interface Resume {
   // видимость живёт здесь: access.type.id === "no_one" значит снято с показа
   access?: { type?: { id?: string; name?: string } };
   updated_at?: string;
+  total_views?: number;
   views?: number;
   new_messages?: number;
 }
@@ -196,6 +213,7 @@ export function resumeHidden(r: Resume): boolean {
 // идёт в резюме. Хранится в приложении, пополняется и разговором с агентом,
 // и правкой вручную.
 export interface ProfileData {
+  revision?: number;
   contacts?: { full_name?: string; phone?: string; email?: string; city?: string; links?: string };
   positions?: {
     desired_title?: string;
@@ -212,7 +230,7 @@ export interface ProfileData {
   projects?: { name?: string; role?: string; description?: string }[];
   wishes?: string;
   about?: string;
-  notes?: { topic?: string | null; text: string; added_at?: number }[];
+  notes?: { id?: string; topic?: string | null; text: string; added_at?: number; updated_at?: number }[];
 }
 
 export interface AgentConfig {
@@ -598,7 +616,14 @@ export const api = {
   openResumeEditor: (resumeId: string) => invoke<void>("open_resume_editor", { resumeId }),
   openResumeCreator: () => invoke<void>("open_resume_creator"),
   profileLoad: () => invoke<ProfileData>("profile_load"),
-  profileSave: (data: ProfileData) => invoke<void>("profile_save", { data }),  agentsLoad: () => invoke<AgentStore>("agents_load"),
+  profileSave: async (data: ProfileData): Promise<ProfileData> => {
+    if (demo) {
+      const saved = { ...data, revision: (data.revision || 0) + 1 };
+      mock.profile_load = saved;
+      return saved;
+    }
+    return invoke<ProfileData>("profile_save", { data });
+  },  agentsLoad: () => invoke<AgentStore>("agents_load"),
   agentsSave: (store: AgentStore) => invoke<void>("agents_save", { store }),
   agentTest: (config: AgentConfig) =>
     invoke<{ models: string[] }>("agent_test", { config }),
@@ -611,6 +636,8 @@ export const api = {
   chatStop: (chatId: string) => {
     if (demo) {
       demoAborted = true;
+      const pending = demoQuestions.get(chatId);
+      if (pending) { demoQuestions.delete(chatId); pending.resolve({ answers: {}, cancelled: true }); }
       return Promise.resolve();
     }
     return invoke<void>("chat_stop", { chatId });
@@ -632,6 +659,9 @@ export const api = {
   trackingsLoad: () => invoke<{ items?: Tracking[] }>("trackings_load"),
   trackingsSave: (items: Tracking[]) =>
     invoke<void>("trackings_save", { data: { items } }),
+  chatPendingQuestion: (chatId: string) => invoke<PendingQuestion | null>("chat_pending_question", { chatId }),
+  chatAnswer: (chatId: string, callId: string, answers: Record<string, string>, cancelled = false) =>
+    invoke<void>("chat_answer", { chatId, callId, answers, cancelled }),
   chatConfirm: (chatId: string, callId: string, decision: "allow" | "deny") =>
     invoke<void>("chat_confirm", { chatId, callId, decision }),
 
@@ -687,15 +717,23 @@ export interface StoredChatMsg {
   role: "user" | "assistant";
   content: string;
   // полный ход ответа (размышления/инструменты/текст), сохранённый бэкендом
-  parts?: { kind: "text" | "thinking" | "tool"; text?: string; name?: string; args?: Record<string, unknown>; result?: string; label?: string; status?: string; elapsed_ms?: number }[];
+  parts?: { call_id?: string; kind: "text" | "thinking" | "tool"; text?: string; name?: string; args?: Record<string, unknown>; result?: string; label?: string; status?: string; elapsed_ms?: number }[];
   error?: string;
 }
 
+export interface QuestionForm {
+  title: string;
+  questions: { id: string; label: string; options?: string[]; required?: boolean; multiline?: boolean }[];
+}
+export interface PendingQuestion { call_id: string; form: QuestionForm }
+
 export type ChatEvent =
+  | { type: "question_request"; call_id: string; form: QuestionForm }
+  | { type: "question_result"; call_id: string; result: { cancelled?: boolean; answers?: { id: string; question: string; answer: string }[] } }
   | { type: "delta"; content: string }
   | { type: "reasoning"; content: string }
-  | { type: "tool_start"; name: string; args?: { query?: string; url?: string; theme?: string; tab?: string } }
-  | { type: "tool_end"; name: string; result?: string }
+  | { type: "tool_start"; call_id?: string; name: string; args?: { query?: string; url?: string; theme?: string; tab?: string } }
+  | { type: "tool_end"; call_id?: string; name: string; result?: string }
   | { type: "confirm_request"; call_id: string; name: string; args?: Record<string, unknown> }
   | { type: "confirm_result"; call_id: string; decision: string }
   | { type: "do_action"; name: string; args?: { theme?: string; tab?: string } }
@@ -722,7 +760,7 @@ export function chatStartStream(
   mode: AgentMode,
   onEvent: (e: ChatEvent) => void
 ): Promise<void> {
-  if (demo) return demoChatStart(message, onEvent);
+  if (demo) return /резюме|вопрос|форм[ау]/i.test(message) ? demoQuestionChat(chatId, onEvent) : demoChatStart(message, onEvent);
 
   const channel = new Channel((msg: unknown) => onEvent(msg as ChatEvent));
   return invoke<void>("chat_start", {
@@ -812,4 +850,32 @@ const coverLetter = \`Здравствуйте! Мой опыт — \${years} л
     }
     onEvent({ type: "done" });
   })();
+}
+
+
+const demoQuestions = new Map<string, { call_id: string; resolve: (answer: { answers: Record<string, string>; cancelled: boolean }) => void }>();
+async function demoQuestionChat(chatId: string, onEvent: (e: ChatEvent) => void) {
+  const chats = mock.chats_list as ChatSummary[];
+  chats.unshift({ id: chatId, title: "Создание резюме", updated_at: Date.now() / 1000 });
+  const call_id = `question-${chatId}`;
+  const form: QuestionForm = { title: "Уточним новое резюме", questions: [
+    { id: "role", label: "На какую должность готовим резюме?", options: ["Frontend-разработчик", "Fullstack-разработчик", "Тимлид"], required: true },
+    { id: "format", label: "Какой формат работы вам подходит?", options: ["Удалённо", "Гибрид", "В офисе"], required: true },
+    { id: "focus", label: "Какие достижения стоит выделить?", multiline: true, required: false },
+  ] };
+  onEvent({ type: "delta", content: "Использую знания о вашем опыте. Уточним направление и пожелания." });
+  onEvent({ type: "tool_start", name: "ask_questions", call_id });
+  const response = new Promise<{ answers: Record<string, string>; cancelled: boolean }>((resolve) => demoQuestions.set(chatId, { call_id, resolve }));
+  onEvent({ type: "question_request", call_id, form });
+  const answer = await response;
+  const result = answer.cancelled ? { cancelled: true } : { answers: form.questions.map((q) => ({ id: q.id, question: q.label, answer: answer.answers[q.id] || "" })) };
+  onEvent({ type: "question_result", call_id, result });
+  onEvent({ type: "tool_end", name: "ask_questions", call_id, result: JSON.stringify(result) });
+  if (!answer.cancelled) {
+    onEvent({ type: "tool_start", call_id: `${call_id}-profile`, name: "read_profile" });
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    onEvent({ type: "tool_end", call_id: `${call_id}-profile`, name: "read_profile", result: "Использованы знания об опыте и навыках." });
+  }
+  onEvent({ type: "delta", content: answer.cancelled ? "Форма отменена. Создание резюме не выполнялось." : "Подготовка продолжена с учётом уточнений. Это демонстрация интерфейса; резюме на hh.ru не создавалось." });
+  onEvent({ type: "done" });
 }

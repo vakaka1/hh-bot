@@ -1,0 +1,160 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "create_knowledge",
+      "description": "Создать одну или несколько заметок о пользователе с отдельными темами. Сохраняй только сообщённые пользователем факты. Сначала проверь list_knowledge: существующие факты исправляй через update_knowledge, не создавай дубликаты. Возвращает созданные записи с постоянными ID.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "notes": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "properties": {
+                "text": {
+                  "type": "string"
+                },
+                "topic": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Тема заметки. null или пустая строка — без темы."
+                }
+              },
+              "required": [
+                "text"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "notes"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "update_knowledge",
+      "description": "Исправить текст и/или тему существующей заметки по постоянному ID. Пропущенные поля сохраняются; topic=null снимает тему. Текст должен быть непустым. ID и дата создания сохраняются. При уточнении или изменении факта обновляй старую заметку, чтобы не оставлять противоречий.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "topic": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Тема заметки. null или пустая строка — без темы."
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "delete_knowledge",
+      "description": "Удалить одну или несколько записей знаний по постоянным ID. Используй по просьбе пользователя забыть сведения или удалить выбранные записи. Перед удалением прочитай актуальные записи. Все ID проверяются до удаления; если хотя бы один не найден, ничего не удаляется. Возвращает удалённые записи и число оставшихся.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "description": "Постоянные ID из list_knowledge или read_knowledge. Не используй номера позиций."
+          }
+        },
+        "required": [
+          "ids"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "rename_knowledge_topic",
+      "description": "Переименовать тему у всех её заметок или перенести их в другую тему. from=null означает заметки без темы, to=null снимает тему. Сравнение from без учёта регистра. Если целевая тема существует, записи объединяются в её группу. Текст и ID заметок сохраняются.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Тема заметки. null или пустая строка — без темы."
+          },
+          "to": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Тема заметки. null или пустая строка — без темы."
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "merge_knowledge",
+      "description": "Объединить несколько заметок в одну, например дубли. Сначала прочитай исходные записи, сохрани все существенные факты в text и не добавляй домыслы. Первая запись в ids сохраняет ID и дату создания, остальные удаляются. Пропущенная topic сохраняет тему первой записи.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 2,
+            "description": "Постоянные ID из list_knowledge или read_knowledge. Не используй номера позиций."
+          },
+          "text": {
+            "type": "string"
+          },
+          "topic": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Тема заметки. null или пустая строка — без темы."
+          }
+        },
+        "required": [
+          "ids",
+          "text"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+]

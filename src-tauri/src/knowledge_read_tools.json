@@ -1,0 +1,65 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "list_knowledge",
+      "description": "Список и поиск знаний о пользователе. Возвращает полные записи с постоянными ID, темами, текстом и датами, total и next_offset. Для всех результатов повторяй с next_offset, пока он не станет null. Без фильтров — вся база, query — поиск по тексту и теме без учёта регистра, topic — точная тема без учёта регистра. Чтение не меняет знания.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          },
+          "topic": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Тема заметки. null или пустая строка — без темы."
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "read_knowledge",
+      "description": "Прочитать одну полную запись знаний по постоянному ID. Если ID неизвестен, сначала используй list_knowledge.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "list_knowledge_topics",
+      "description": "Показать все темы знаний и число записей в каждой, включая записи без темы. Только чтение.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    }
+  }
+]

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { api, AgentStore, AgentMode, AGENT_MODES, ChatEvent, ChatSummary, ModelEntry, loadAllModels, parseModelValue } from "./api";
+import { api, AgentStore, AgentMode, AGENT_MODES, ChatEvent, ChatSummary, ModelEntry, loadAllModels, parseModelValue, PendingQuestion } from "./api";
 import ModelSelect from "./ModelSelect";
 import Markdown from "./Markdown";
+import QuestionForm from "./QuestionForm";
 import {
   BookmarkCheck, BookmarkPlus, BookmarkX, BriefcaseBusiness, BrainCircuit, Check, ChevronDown,
   CalendarClock, CircleUserRound, Copy, FileCheck, FileSearch, FileText, Files,
@@ -18,6 +19,7 @@ type Part =
   | {
       kind: "tool";
       name: string;
+      callId?: string;
       label: string;
       status: "running" | "done";
       args?: Record<string, unknown>;
@@ -53,6 +55,11 @@ function toolLabel(name: string, args?: Record<string, unknown>): string {
     return u ? `Читает: ${u}` : "Читает страницу";
   }
   if (name === "current_datetime") return "Проверяет дату и время";
+  if (name === "ask_questions") return "Уточняет детали";
+  if (name === "create_resume") return "Создаёт резюме";
+  if (name === "update_resume") return "Обновляет резюме";
+  if (name === "set_resume_skill_levels") return "Сохраняет уровни навыков";
+  if (name === "resume_reference") return "Проверяет справочники hh.ru";
   if (name === "list_resumes") return "Смотрит ваши резюме";
   if (name === "read_resume") return "Читает резюме";
   if (name === "search_vacancies") return "Ищет вакансии через приложение";
@@ -60,7 +67,15 @@ function toolLabel(name: string, args?: Record<string, unknown>): string {
   if (name === "create_tracking") return "Создаёт отслеживание вакансий";
   if (name === "update_tracking") return "Изменяет отслеживание вакансий";
   if (name === "delete_tracking") return "Удаляет отслеживание вакансий";
-  if (name === "read_profile") return "Читает ваш профиль";
+  if (name === "read_profile") return "Читает знания о вас";
+  if (name === "list_knowledge") return args?.query ? `Ищет в знаниях: «${args.query}»` : "Смотрит знания о вас";
+  if (name === "read_knowledge") return "Читает запись знаний";
+  if (name === "list_knowledge_topics") return "Смотрит темы знаний";
+  if (name === "create_knowledge") return "Запоминает сведения о вас";
+  if (name === "update_knowledge") return "Исправляет сведения о вас";
+  if (name === "delete_knowledge") return "Удаляет сведения о вас";
+  if (name === "rename_knowledge_topic") return "Меняет тему знаний";
+  if (name === "merge_knowledge") return "Объединяет записи знаний";
   if (name === "prepare_resume_texts") return "Готовит тексты для резюме";
   if (name === "render_page") return "Открывает и читает страницу";
   if (name === "list_chats") return "Смотрит переписки с работодателями";
@@ -108,6 +123,9 @@ function toolIcon(name: string) {
   if (name === "send_chat_message") return Send;
   if (name === "list_chats" || name === "read_chat") return MessageSquareText;
   if (name === "search_vacancies") return BriefcaseBusiness;
+  if (name === "ask_questions") return ListChecks;
+  if (name === "create_resume" || name === "update_resume" || name === "set_resume_skill_levels") return FileText;
+  if (name === "resume_reference") return FileSearch;
   if (name === "list_resumes") return Files;
   if (name === "read_resume") return FileSearch;
   if (name === "prepare_resume_texts") return FileText;
@@ -115,7 +133,8 @@ function toolIcon(name: string) {
   if (name === "publish_resume") return FileCheck;
   if (name === "unpublish_resume") return FileX;
   if (name === "read_profile") return CircleUserRound;
-  if (name === "update_profile") return UserRoundPen;
+  if (["update_profile", "create_knowledge", "update_knowledge", "rename_knowledge_topic", "merge_knowledge"].includes(name)) return UserRoundPen;
+  if (["list_knowledge", "read_knowledge", "list_knowledge_topics"].includes(name)) return FileSearch;
   if (name === "list_trackings") return ListChecks;
   if (name === "update_tracking") return BookmarkCheck;
   if (name === "delete_tracking") return BookmarkX;
@@ -135,7 +154,7 @@ function toolIcon(name: string) {
 // если он записан, иначе обычный текст
 function restoreParts(m: {
   content: string;
-  parts?: { kind: string; text?: string; name?: string; args?: Record<string, unknown>; result?: string; label?: string; status?: string; elapsed_ms?: number }[];
+  parts?: { call_id?: string; kind: string; text?: string; name?: string; args?: Record<string, unknown>; result?: string; label?: string; status?: string; elapsed_ms?: number }[];
 }): Part[] {
   if (m.parts && m.parts.length > 0) {
     const parts: Part[] = [];
@@ -146,6 +165,7 @@ function restoreParts(m: {
         parts.push({
           kind: "tool",
           name: p.name,
+          callId: p.call_id,
           label: p.label || toolLabel(p.name, p.args),
           status: "done",
           args: p.args,
@@ -177,17 +197,22 @@ function getModeIcon(m: AgentMode) {
 
 export default function Chat({
   store,
+  launchRequest,
   mode,
   onMode,
   onTheme,
   onNavigate,
 }: {
   store: AgentStore;
+  launchRequest?: { id: number; message: string } | null;
   mode: AgentMode;
   onMode: (m: AgentMode) => void;
   onTheme: (t: "light" | "dark" | "system") => void;
   onNavigate: (tab: "chat" | "vacancies" | "hhchats" | "knowledge" | "profile" | "settings") => void;
 }) {
+  const [questions, setQuestions] = useState<Record<string, PendingQuestion>>({});
+  const [answerDrafts, setAnswerDrafts] = useState<Record<string, Record<string, string>>>({});
+  const launchedRef = useRef<number | null>(null);
   const [chats, setChats] = useState<ChatSummary[]>([]);
   const [currentId, setCurrentId] = useState<string | null>(null);
   const [entries, setEntries] = useState<ChatEntry[]>([]);
@@ -293,6 +318,9 @@ export default function Chat({
   useEffect(() => {
     const onCleared = () => {
       setChats([]);
+      setQuestions({});
+      setAnswerDrafts({});
+      entriesByChatRef.current.clear();
       setCurrentId(null);
       setEntries([]);
     };
@@ -338,6 +366,7 @@ export default function Chat({
 
   function deleteChat(id: string, e: React.MouseEvent) {
     e.stopPropagation();
+    if (runningChatsRef.current.has(id)) api.chatStop(id);
     api.chatDelete(id).then(() => {
       setChats((cs) => cs.filter((c) => c.id !== id));
       if (currentId === id) {
@@ -349,9 +378,43 @@ export default function Chat({
 
   const handleEvent = useCallback(
     (targetId: string, e: ChatEvent) => {
+      if (e.type === "question_request") {
+        setQuestions((prev) => ({ ...prev, [targetId]: { call_id: e.call_id, form: e.form } }));
+        const previous = entriesByChatRef.current.get(targetId) || [];
+        const last = previous[previous.length - 1];
+        if (last?.role === "assistant" && last.streaming) {
+          const index = last.parts.map((part) => part.kind === "tool" && part.name === "ask_questions" && part.status === "running").lastIndexOf(true);
+          if (index >= 0) {
+            const parts = last.parts.map((part, i) => i === index && part.kind === "tool" ? { ...part, callId: e.call_id, args: { ...e.form } } : part);
+            const next = [...previous.slice(0, -1), { ...last, parts }];
+            entriesByChatRef.current.set(targetId, next);
+            if (activeChatIdRef.current === targetId) setEntries(next);
+          }
+        }
+        return;
+      }
+      if (e.type === "question_result" || e.type === "done" || e.type === "cancelled" || e.type === "error") {
+        setQuestions((prev) => {
+          const next = { ...prev };
+          if (e.type !== "question_result" || next[targetId]?.call_id === e.call_id) delete next[targetId];
+          return next;
+        });
+      }
+      if (e.type === "question_result") {
+        // Patch the original question in place; answers never become a new chat segment.
+        const previous = entriesByChatRef.current.get(targetId) || [];
+        const next = previous.map((entry) => ({ ...entry, parts: entry.parts.map((part) =>
+          part.kind === "tool" && part.name === "ask_questions" && part.callId === e.call_id
+            ? { ...part, status: "done" as const, result: JSON.stringify(e.result) } : part
+        ) }));
+        entriesByChatRef.current.set(targetId, next);
+        if (activeChatIdRef.current === targetId) setEntries(next);
+        return;
+      }
       // A stream belongs to the chat that started it. Background events must
       // never leak into whichever conversation the user has opened meanwhile.
-      setEntries((visible) => {
+      const visible = entriesByChatRef.current.get(targetId) || [];
+      const nextEntries = (() => {
         const prev = entriesByChatRef.current.get(targetId) || (activeChatIdRef.current === targetId ? visible : []);
         const last = prev[prev.length - 1];
         const ensureAssistant = (): ChatEntry[] => {
@@ -396,6 +459,7 @@ export default function Chat({
                 {
                   kind: "tool",
                   name: e.name,
+                  callId: e.call_id,
                   label: toolLabel(e.name, e.args),
                   status: "running",
                   args: e.args,
@@ -406,7 +470,7 @@ export default function Chat({
             result = patchLast((e0) => ({
               ...e0,
               parts: e0.parts.map((p) =>
-                p.kind === "tool" && p.name === e.name && p.status === "running"
+                p.kind === "tool" && p.name === e.name && p.status === "running" && (!e.call_id || p.callId === e.call_id)
                   ? { ...p, status: "done" as const, result: e.result }
                   : p
               ),
@@ -480,7 +544,8 @@ export default function Chat({
           runningChatsRef.current.delete(targetId);
         }
         return activeChatIdRef.current === targetId ? result : visible;
-      });
+      })();
+      if (activeChatIdRef.current === targetId) setEntries(nextEntries);
       if (e.type === "done" || e.type === "error" || e.type === "cancelled") {
         setRunningChatIds(new Set(runningChatsRef.current));
       }
@@ -488,9 +553,9 @@ export default function Chat({
     []
   );
 
-  async function send() {
-    const message = text.trim();
-    const targetId = currentId ?? newChatId();
+  async function send(initialMessage?: string, fresh = false) {
+    const message = (initialMessage ?? text).trim();
+    const targetId = fresh ? newChatId() : currentId ?? newChatId();
     if (!message || runningChatsRef.current.has(targetId)) return;
 
     const id = targetId;
@@ -500,16 +565,14 @@ export default function Chat({
     setText("");
     setStreaming(true);
     stickBottomRef.current = true;
-    setEntries((prev) => {
-      const next = [
-      ...prev,
+    const next: ChatEntry[] = [
+      ...(fresh ? [] : entriesByChatRef.current.get(id) || entries),
       { role: "user", parts: [{ kind: "text", text: message }] },
-      // мгновенный отклик: пузырь агента с точками ещё до первого события
       { role: "assistant", parts: [], streaming: true, processOpen: true, startedAt: Date.now() },
-      ] as ChatEntry[];
-      entriesByChatRef.current.set(id, next);
-      return next;
-    });
+    ];
+    activeChatIdRef.current = id;
+    entriesByChatRef.current.set(id, next);
+    setEntries(next);
     setChats((prev) => {
       const existing = prev.find((chat) => chat.id === id);
       const chat = existing
@@ -521,7 +584,7 @@ export default function Chat({
     try {
       // модель хранится как «провайдер::модель» — запрос уходит её провайдеру
       const sel = parseModelValue(chatModel);
-      await api.chatStartStream(id, message, sel.model, sel.provider, mode, (event) => handleEvent(id, event));
+      await api.chatStartStream(id, message, sel.model, sel.provider, fresh && mode === "chat" ? "confirm" : mode, (event) => handleEvent(id, event));
     } catch (e) {
       handleEvent(id, { type: "error", message: String(e) });
     } finally {
@@ -530,6 +593,27 @@ export default function Chat({
       setStreaming(runningChatsRef.current.has(activeChatIdRef.current || ""));
       refreshChats();
     }
+  }
+
+  useEffect(() => {
+    if (!launchRequest || launchedRef.current === launchRequest.id) return;
+    launchedRef.current = launchRequest.id;
+    if (mode === "chat") onMode("confirm");
+    void send(launchRequest.message, true);
+  }, [launchRequest]);
+
+  const pendingQuestion = currentId ? questions[currentId] : undefined;
+  const answerKey = `${currentId}:${pendingQuestion?.call_id}`;
+  async function answerQuestion(cancelled: boolean) {
+    if (!currentId || !pendingQuestion) return;
+    const targetId = currentId;
+    await api.chatAnswer(targetId, pendingQuestion.call_id, answerDrafts[answerKey] || {}, cancelled);
+    setQuestions((prev) => {
+      const next = { ...prev };
+      if (next[targetId]?.call_id === pendingQuestion.call_id) delete next[targetId];
+      return next;
+    });
+    setAnswerDrafts((prev) => { const next = { ...prev }; delete next[answerKey]; return next; });
   }
 
   function stop() {
@@ -644,7 +728,7 @@ export default function Chat({
       ) : (
         <button
           className="send-btn"
-          onClick={send}
+          onClick={() => send()}
           disabled={!text.trim()}
           title="Отправить (Enter)"
         >
@@ -683,7 +767,7 @@ export default function Chat({
               onClick={() => openChat(c.id)}
               title={c.title}
             >
-              {runningChatIds.has(c.id) && <span className="chat-item-live" role="img" aria-label="Агент работает" />}
+              {questions[c.id] ? <ListChecks size={14} className="chat-item-waiting" aria-label="Ждёт вашего ответа" /> : runningChatIds.has(c.id) && <span className="chat-item-live" role="img" aria-label="Агент работает" />}
               <span className="chat-item-label">{c.title}</span>
               <button
                 className="chat-item-del"
@@ -771,7 +855,7 @@ export default function Chat({
         )}
 
         <div className="chat-composer-wrap">
-          <div className={"chat-composer" + (isMultiline ? " multiline" : "")}>
+          {pendingQuestion ? <QuestionForm key={answerKey} request={pendingQuestion} answers={answerDrafts[answerKey] || {}} onChange={(answers) => setAnswerDrafts((prev) => ({ ...prev, [answerKey]: answers }))} onSubmit={answerQuestion} onStop={stop} /> : <div className={"chat-composer" + (isMultiline ? " multiline" : "")}>
             {!isMultiline ? (
               <>
                 {modeSelector}
@@ -813,11 +897,20 @@ export default function Chat({
                 </div>
               </>
             )}
-          </div>
+          </div>}
         </div>
       </div>
     </div>
   );
+}
+
+function QuestionAnswers({ result }: { result: string }) {
+  try {
+    const data = JSON.parse(result) as { cancelled?: boolean; answers?: { id: string; question: string; answer?: string }[] };
+    if (data.cancelled) return <div className="question-answer-summary"><span>Вопросы отменены</span></div>;
+    if (!Array.isArray(data.answers)) return <pre>{result}</pre>;
+    return <div className="question-answer-summary">{data.answers.map((answer) => <div key={answer.id}><span>{answer.question}</span><p>{answer.answer || "Пропущено"}</p></div>)}</div>;
+  } catch { return <pre>{result}</pre>; }
 }
 
 // один вызов инструмента с раскрываемыми деталями (JSON запроса и ответа)
@@ -848,20 +941,18 @@ function ToolPartView({ part }: { part: Extract<Part, { kind: "tool" }> }) {
         {hasDetails && <ChevronDown className={"tool-call-chevron" + (open ? " open" : "")} size={15} aria-hidden="true" />}
       </button>
       {hasDetails && (
-        <div className={"tool-details-clip" + (open ? " expanded" : "")}>
+        <div className={"tool-details-clip" + (open ? " expanded" : "")} aria-hidden={!open}>
         <div className="tool-details-plain">
-          {part.args && Object.keys(part.args).length > 0 && (
+          {part.name !== "ask_questions" && part.args && Object.keys(part.args).length > 0 && (
             <>
               <div className="tool-details-label">Аргументы</div>
               <pre>{JSON.stringify(part.args, null, 2)}</pre>
             </>
           )}
-          {part.result && (
-            <>
-              <div className="tool-details-label">Ответ</div>
-              <pre>{part.result}</pre>
-            </>
-          )}
+          {part.result && (part.name === "ask_questions" ? <QuestionAnswers result={part.result} /> : <>
+            <div className="tool-details-label">Ответ</div>
+            <pre>{part.result}</pre>
+          </>)}
         </div>
         </div>
       )}
@@ -965,7 +1056,7 @@ function AgentMessage({
             {m.parts.filter((p) => p.kind !== "text" || !p.final).map((p, j) => p.kind === "text" ? (
               <div className="agent-intermediate" key={j}><Markdown text={p.text} /></div>
             ) : p.kind === "tool" ? (
-              <ToolPartView key={j} part={p} />
+              <ToolPartView key={p.callId || j} part={p} />
             ) : (
               <ThinkingPartView key={j} part={p} streaming={Boolean(m.streaming && p.elapsedMs === undefined)} />
             ))}

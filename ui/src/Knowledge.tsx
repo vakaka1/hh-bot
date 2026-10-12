@@ -20,6 +20,8 @@ interface KnowledgeProps {
 }
 
 type NoteItem = {
+  id?: string;
+  updated_at?: number;
   topic?: string | null;
   text: string;
   added_at?: number;
@@ -123,24 +125,35 @@ export default function Knowledge({ onNavigate }: KnowledgeProps) {
   const profileRef = useRef(profile);
   profileRef.current = profile;
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const saveQueue = useRef<Promise<void>>(Promise.resolve());
 
   function scheduleSave() {
     if (saveTimer.current) clearTimeout(saveTimer.current);
     setSaving(true);
-    saveTimer.current = setTimeout(async () => {
-      try {
-        await api.profileSave(profileRef.current);
-        setSaveErr("");
-      } catch (e) {
-        setSaveErr(String(e));
-      } finally {
-        setSaving(false);
-      }
+    saveTimer.current = setTimeout(() => {
+      saveQueue.current = saveQueue.current.then(async () => {
+        const snapshot = profileRef.current;
+        try {
+          const saved = await api.profileSave(snapshot);
+          // Keep edits made while saving, but use the newly persisted revision.
+          const next = profileRef.current === snapshot
+            ? saved : { ...profileRef.current, revision: saved.revision };
+          profileRef.current = next;
+          setProfile(next);
+          setSaveErr("");
+        } catch (e) {
+          setSaveErr(String(e));
+        } finally {
+          setSaving(false);
+        }
+      });
     }, 600);
   }
 
   function setNotes(nextNotes: NoteItem[]) {
-    setProfile((prev) => ({ ...prev, notes: nextNotes }));
+    const next = { ...profileRef.current, notes: nextNotes };
+    profileRef.current = next;
+    setProfile(next);
     scheduleSave();
   }
 
@@ -150,6 +163,7 @@ export default function Knowledge({ onNavigate }: KnowledgeProps) {
     if (!trimmedText) return;
 
     const newNote: NoteItem = {
+      id: crypto.randomUUID(),
       topic: newTopic.trim() || null,
       text: trimmedText,
       added_at: Math.floor(Date.now() / 1000),
@@ -185,6 +199,7 @@ export default function Knowledge({ onNavigate }: KnowledgeProps) {
             ...n,
             topic: editTopic.trim() || null,
             text: trimmedText,
+            updated_at: Math.floor(Date.now() / 1000),
           }
         : n
     );
@@ -491,7 +506,7 @@ export default function Knowledge({ onNavigate }: KnowledgeProps) {
 
             if (isEditing) {
               return (
-                <div className="knowledge-tile knowledge-tile-editing" key={originalIndex}>
+                <div className="knowledge-tile knowledge-tile-editing" key={note.id || originalIndex}>
                   <div className="knowledge-tile-edit-head">
                     <input
                       className="knowledge-tile-edit-topic"
@@ -528,7 +543,7 @@ export default function Knowledge({ onNavigate }: KnowledgeProps) {
             }
 
             return (
-              <div className="knowledge-tile" key={originalIndex}>
+              <div className="knowledge-tile" key={note.id || originalIndex}>
                 <div className="knowledge-tile-top">
                   <div className="knowledge-tile-badges">
                     <span className={`knowledge-topic-badge ${topicClass}`}>
