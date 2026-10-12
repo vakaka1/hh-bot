@@ -1316,7 +1316,8 @@ html[data-theme="dark"] .seg.active { background: var(--border); }
 
 /* ============ поле ввода чата (композер) ============ */
 .chat-composer {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
   width: 100%;
@@ -1334,18 +1335,31 @@ html[data-theme="dark"] .seg.active { background: var(--border); }
   box-shadow: 0 0 0 3px rgba(196, 0, 29, 0.12);
 }
 .chat-composer.multiline {
-  flex-direction: column;
+  grid-template-columns: minmax(0, 1fr);
   align-items: stretch;
   border-radius: 18px;
-  padding: 10px 10px 8px;
+  padding: 10px 8px 8px;
   gap: 8px;
 }
 .chat-composer-footer {
+  display: contents;
+}
+.chat-composer .composer-mode-wrap {
+  grid-column: 1;
+  grid-row: 1;
+}
+.chat-composer .chat-composer-right {
+  grid-column: 3;
+  grid-row: 1;
+}
+.chat-composer.multiline .chat-composer-footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
   width: 100%;
   padding-top: 2px;
+  grid-column: 1;
+  grid-row: 2;
 }
 .chat-composer-right {
   display: flex;
@@ -1353,7 +1367,9 @@ html[data-theme="dark"] .seg.active { background: var(--border); }
   gap: 8px;
 }
 .chat-composer .chat-textarea {
-  flex: 1;
+  grid-column: 2;
+  grid-row: 1;
+  min-width: 0;
   width: 100%;
   border: none;
   background: transparent;
@@ -1367,6 +1383,9 @@ html[data-theme="dark"] .seg.active { background: var(--border); }
   box-shadow: none;
   border-radius: 0;
   font-family: inherit;
+}
+.chat-composer.multiline .chat-textarea {
+  grid-column: 1;
 }
 .chat-composer .chat-textarea:focus {
   outline: none;

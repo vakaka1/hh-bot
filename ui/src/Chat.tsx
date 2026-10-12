@@ -634,27 +634,55 @@ export default function Chat({
     localStorage.setItem("chat_model", m);
   }
 
-  // пересчёт высоты поля ввода и отслеживание многострочности
+  // Проверяем переносы на ширине компактной панели, чтобы раскрытое поле
+  // не переключалось обратно при получении всей ширины композера.
   useLayoutEffect(() => {
     const el = inputRef.current;
     if (!el) return;
-    if (text.includes("\n")) {
-      setIsMultiline(true);
-    } else {
-      el.style.height = "auto";
-      setIsMultiline(el.scrollHeight > 38);
-    }
-  }, [text]);
+    const composer = el.closest<HTMLElement>(".chat-composer")!;
+    const modeControl = composer.querySelector<HTMLElement>(".composer-mode-wrap")!;
+    const rightControls = composer.querySelector<HTMLElement>(".chat-composer-right")!;
+    const probe = el.cloneNode() as HTMLTextAreaElement;
+    probe.removeAttribute("placeholder");
+    probe.setAttribute("aria-hidden", "true");
+    probe.tabIndex = -1;
+    probe.value = text;
+    Object.assign(probe.style, {
+      position: "fixed", visibility: "hidden", pointerEvents: "none",
+      height: "0px", minHeight: "0px", maxHeight: "none", overflow: "hidden",
+    });
+    composer.appendChild(probe);
 
-  useLayoutEffect(() => {
-    const el = inputRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    const needed = el.scrollHeight;
-    const maxHeight = 220;
-    el.style.height = Math.min(needed, maxHeight) + "px";
-    el.style.overflowY = needed > maxHeight ? "auto" : "hidden";
-  }, [text, isMultiline]);
+    function resize() {
+      const composerStyle = getComputedStyle(composer);
+      const inputStyle = getComputedStyle(el!);
+      const compactWidth = composer.clientWidth
+        - parseFloat(composerStyle.paddingLeft) - parseFloat(composerStyle.paddingRight)
+        - modeControl.offsetWidth - rightControls.offsetWidth
+        - 2 * parseFloat(composerStyle.columnGap);
+      probe.style.width = `${Math.max(1, compactWidth)}px`;
+      const singleLineHeight = parseFloat(inputStyle.lineHeight)
+        + parseFloat(inputStyle.paddingTop) + parseFloat(inputStyle.paddingBottom);
+      setIsMultiline(Boolean(text) && (text.includes("\n") || probe.scrollHeight > singleLineHeight + 1));
+
+      el!.style.height = "0px";
+      el!.style.overflowY = "hidden";
+      const needed = el!.scrollHeight;
+      const maxHeight = parseFloat(inputStyle.maxHeight);
+      el!.style.height = `${Math.min(needed, maxHeight)}px`;
+      el!.style.overflowY = needed > maxHeight ? "auto" : "hidden";
+    }
+
+    resize();
+    const observer = new ResizeObserver(resize);
+    observer.observe(composer);
+    observer.observe(modeControl);
+    observer.observe(rightControls);
+    return () => {
+      observer.disconnect();
+      probe.remove();
+    };
+  }, [text, isMultiline, Boolean(pendingQuestion)]);
 
   const empty = entries.length === 0;
   const currentChat = chats.find((c) => c.id === currentId);
@@ -856,47 +884,25 @@ export default function Chat({
 
         <div className="chat-composer-wrap">
           {pendingQuestion ? <QuestionForm key={answerKey} request={pendingQuestion} answers={answerDrafts[answerKey] || {}} onChange={(answers) => setAnswerDrafts((prev) => ({ ...prev, [answerKey]: answers }))} onSubmit={answerQuestion} onStop={stop} /> : <div className={"chat-composer" + (isMultiline ? " multiline" : "")}>
-            {!isMultiline ? (
-              <>
-                {modeSelector}
-                <textarea
-                  ref={inputRef}
-                  className="chat-textarea"
-                  rows={1}
-                  value={text}
-                  onChange={(e) => setText(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
-                      e.preventDefault();
-                      send();
-                    }
-                  }}
-                  placeholder="Напишите сообщение… (Enter — отправить, Shift+Enter — перенос)"
-                />
-                {composerRight}
-              </>
-            ) : (
-              <>
-                <textarea
-                  ref={inputRef}
-                  className="chat-textarea"
-                  rows={2}
-                  value={text}
-                  onChange={(e) => setText(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
-                      e.preventDefault();
-                      send();
-                    }
-                  }}
-                  placeholder="Напишите сообщение… (Enter — отправить, Shift+Enter — перенос)"
-                />
-                <div className="chat-composer-footer">
-                  {modeSelector}
-                  {composerRight}
-                </div>
-              </>
-            )}
+            <textarea
+              ref={inputRef}
+              className="chat-textarea"
+              rows={1}
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  send();
+                }
+              }}
+              placeholder="Напишите сообщение…"
+              title="Enter — отправить, Shift+Enter — перенос строки"
+            />
+            <div className="chat-composer-footer">
+              {modeSelector}
+              {composerRight}
+            </div>
           </div>}
         </div>
       </div>
